@@ -32,6 +32,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -396,7 +399,9 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background)
                     .statusBarsPadding()
-                    .padding(24.dp)
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(20.dp)
             ) {
                 Box(
                     modifier = Modifier.fillMaxSize()
@@ -449,67 +454,171 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     ) { screen ->
                         when (screen) {
                             Screen.HOME -> {
-                                Box(
-                                    modifier = Modifier.fillMaxSize()
+                                val isConnected = vpnState == VpnState.CONNECTED
+                                val isActiveOrProcessing = isConnected || isProcessing || vpnState == VpnState.CONNECTING
+                                val displayServer = connectedServer ?: activeProxyPool.firstOrNull()
+                                val selectedTransport = displayServer?.params?.get("type")
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: displayServer?.params?.get("network")?.takeIf { it.isNotBlank() }
+                                    ?: "tcp"
+                                val statusLabel = when {
+                                    isProcessing -> "Подготовка подключения"
+                                    vpnState == VpnState.CONNECTING -> "Подключение к прокси"
+                                    isConnected -> "Прокси активен"
+                                    else -> "Прокси отключён"
+                                }
+                                val statusColor = when {
+                                    isConnected -> Color(0xFF2E9D68)
+                                    isActiveOrProcessing -> Color(0xFFE5A23B)
+                                    else -> MaterialTheme.colorScheme.outline
+                                }
+                                val observatorySeconds = (observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400)
+                                val refreshMinutes = (subscriptionRefreshText.toIntOrNull() ?: 60).coerceIn(1, 10080)
+
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .verticalScroll(rememberScrollState())
+                                        .padding(bottom = 20.dp),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
-                                    val isConnected = vpnState == VpnState.CONNECTED
-                                    val isActiveOrProcessing = isConnected || isProcessing
-
-                                    Box(
-                                        modifier = Modifier
-                                            .size(154.dp)
-                                            .align(Alignment.Center)
-                                            .offset(y = (-36).dp),
-                                        contentAlignment = Alignment.Center
+                                    Surface(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = MaterialTheme.shapes.extraLarge,
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        tonalElevation = 2.dp
                                     ) {
-                                        if (isProcessing) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.fillMaxSize(),
-                                                strokeWidth = 4.dp,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-
-                                        Button(
-                                            onClick = {
-                                                if (isActiveOrProcessing) {
-                                                    stopVpnProcess()
-                                                } else {
-                                                    startConnectProcess()
-                                                }
-                                            },
-                                            shape = CircleShape,
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = if (isActiveOrProcessing) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                                                contentColor = if (isActiveOrProcessing) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
-                                            ),
-                                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
-                                            modifier = Modifier.size(130.dp)
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                                         ) {
-                                            Text(
-                                                text = if (isActiveOrProcessing) "Stop" else "Start",
-                                                style = MaterialTheme.typography.titleLarge.copy(
-                                                    fontWeight = FontWeight.Bold
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(14.dp)
+                                                    .clip(CircleShape)
+                                                    .background(statusColor)
+                                            )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = statusLabel,
+                                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                                    color = MaterialTheme.colorScheme.onSurface
                                                 )
+                                                Text(
+                                                    text = if (isConnected) {
+                                                        "Туннель активен · пул прокси: " + activeProxyPool.size
+                                                    } else {
+                                                        statusMessage
+                                                    },
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            Text(
+                                                text = when {
+                                                    isConnected -> "ONLINE"
+                                                    isActiveOrProcessing -> "WAIT"
+                                                    else -> "OFFLINE"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = statusColor
                                             )
                                         }
                                     }
 
-                                    Text(
-                                        text = if (isConnected && connectedServer != null) {
-                                            "Подключено · прокси в пуле: ${activeProxyPool.size}"
-                                        } else {
-                                            statusMessage
+                                    Button(
+                                        onClick = {
+                                            if (isActiveOrProcessing) stopVpnProcess() else startConnectProcess()
                                         },
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            fontWeight = FontWeight.Medium
+                                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                                        shape = MaterialTheme.shapes.large,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (isActiveOrProcessing) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                            contentColor = if (isActiveOrProcessing) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
                                         ),
-                                        color = MaterialTheme.colorScheme.onBackground,
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier
-                                            .align(Alignment.Center)
-                                            .offset(y = 72.dp)
-                                            .padding(horizontal = 24.dp)
+                                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp)
+                                    ) {
+                                        if (isProcessing) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(20.dp),
+                                                strokeWidth = 2.dp,
+                                                color = MaterialTheme.colorScheme.onPrimary
+                                            )
+                                            Spacer(modifier = Modifier.size(10.dp))
+                                        }
+                                        Text(
+                                            text = when {
+                                                isProcessing -> "ПОДГОТОВКА…"
+                                                isActiveOrProcessing -> "ОСТАНОВИТЬ ПРОКСИ"
+                                                else -> "ПОДКЛЮЧИТЬСЯ"
+                                            },
+                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                    }
+
+                                    Surface(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = MaterialTheme.shapes.extraLarge,
+                                        color = MaterialTheme.colorScheme.surface,
+                                        tonalElevation = 1.dp
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(16.dp),
+                                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Text("ТЕКУЩИЙ СЕРВЕР", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.primary)
+                                            Text(
+                                                text = displayServer?.remark ?: "Сервер не выбран",
+                                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = displayServer?.let { it.address + ":" + it.port } ?: "Подключитесь, чтобы увидеть сервер",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+
+                                    Text("ПАРАМЕТРЫ СОЕДИНЕНИЯ", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                                    FlowRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        listOf(
+                                            Triple("Протокол", "VLESS", "Тип прокси"),
+                                            Triple("Транспорт", selectedTransport.uppercase(), "Сетевой канал"),
+                                            Triple("Пинг", displayServer?.pingMs?.takeIf { it >= 0 }?.let { it.toString() + " ms" } ?: "—", "Задержка сервера"),
+                                            Triple("Пул прокси", activeProxyPool.size.toString(), "Прокси в пуле"),
+                                            Triple("Проверка", if (isHttpPing) "GET" else "HEAD", "Метод HTTP-пинга"),
+                                            Triple("Observatory", observatorySeconds.toString() + " с", "Проверка прокси"),
+                                            Triple("Подписка", refreshMinutes.toString() + " мин", "Интервал обновления")
+                                        ).forEach { (label, value, description) ->
+                                            Surface(
+                                                modifier = Modifier.fillMaxWidth(0.48f),
+                                                shape = MaterialTheme.shapes.large,
+                                                color = MaterialTheme.colorScheme.surfaceVariant
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(13.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Text(text = label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    Text(text = value, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                                                    Text(text = description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Text(
+                                        text = "Проверка: " + pingUrl.ifBlank { "URL не задан" },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 2.dp)
                                     )
                                 }
                             }
@@ -518,6 +627,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .verticalScroll(rememberScrollState())
+                                        .imePadding()
+                                        .navigationBarsPadding()
                                         .padding(top = 8.dp, bottom = 24.dp),
                                     horizontalAlignment = Alignment.Start
                                 ) {
