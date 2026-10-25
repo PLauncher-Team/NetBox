@@ -95,7 +95,7 @@ object SubscriptionFetcher {
         }
 
         return decoded.lineSequence()
-            .map(String::trim)
+            .map { it.trim() }
             .filter { it.startsWith("vless://", ignoreCase = true) }
             .mapNotNull { line ->
                 VlessConfig.parse(line).also { config ->
