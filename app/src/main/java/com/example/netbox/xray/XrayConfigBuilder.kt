@@ -15,6 +15,7 @@ object XrayConfigBuilder {
             put("loglevel", "warning")
         }
         root.put("log", log)
+
         val dns = JSONObject().apply {
             put("servers", JSONArray().apply {
                 put("1.1.1.1")
@@ -26,6 +27,7 @@ object XrayConfigBuilder {
             put("queryStrategy", "UseIP")
         }
         root.put("dns", dns)
+
         val inbounds = JSONArray().apply {
             put(JSONObject().apply {
                 put("tag", "socks-in")
@@ -56,6 +58,7 @@ object XrayConfigBuilder {
             })
         }
         root.put("inbounds", inbounds)
+
         val vnextUser = JSONObject().apply {
             put("id", config.uuid)
             put("encryption", config.params["encryption"] ?: "none")
@@ -124,7 +127,9 @@ object XrayConfigBuilder {
                         val xhttpSettings = JSONObject().apply {
                             put("path", config.params["path"] ?: "/")
                             val host = config.params["host"] ?: config.params["sni"]
-                            if (!host.isNullOrBlank()) put("host", host)
+                            if (!host.isNullOrBlank()) {
+                                put("host", host)
+                            }
                             put("mode", config.params["mode"] ?: "auto")
                         }
                         put("xhttpSettings", xhttpSettings)
@@ -156,6 +161,7 @@ object XrayConfigBuilder {
             put(dnsOutbound)
         }
         root.put("outbounds", outbounds)
+
         val routing = JSONObject().apply {
             put("domainStrategy", "IPIfNonMatch")
             val rules = JSONArray().apply {
