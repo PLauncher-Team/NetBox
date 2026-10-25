@@ -559,7 +559,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                         },
                                         placeholder = {
                                             Text(
-                                                text = "https://web.telegram.org",
+                                                text = "https://one.one.one.one",
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                             )
                                         },
@@ -921,7 +921,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             if (fetched.configs.isEmpty()) return false
             // When a live pool exists, a failed scheduled fetch must never replace it with stale data.
             // If every active proxy failed, cached data is still useful as a recovery candidate.
-            if (fetched.loadedFromCache && activeProxyPool.isNotEmpty()) return false
+            if (fetched.loadedFromCache && activeProxyPool.isNotEmpty() && !force) return false
 
             val sourceUris = fetched.configs.map { it.rawUri }.toSet()
             val allowedCandidates = fetched.configs.filter {
