@@ -51,8 +51,10 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    // Use a published LibXray Android artifact. 26.10.10 is not a published
-    // LibXray release; 26.9.30 is the latest release listed by its publisher.
+    // Keep the generated Java bindings and libgojni.so from the same AAR.
+    // Do not vendor separate libgojni.so copies in src/main/jniLibs: a stale
+    // gomobile binary can load successfully but miss LibXray._init() symbols.
+    // 26.9.30 is the latest LibXray release listed by its publisher.
     implementation("io.github.wanliyunyan:libxray:26.9.30")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
