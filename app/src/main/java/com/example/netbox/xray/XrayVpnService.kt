@@ -90,7 +90,11 @@ class XrayVpnService : VpnService() {
         }
 
         AppLogger.d(TAG, "=== STARTING VPN INTERNAL ===")
-        AppLogger.d(TAG, "Target Config: ${config.remark} (${config.address}:${config.port}), Protocol: vless, Security: ${config.params["security"]}")
+        AppLogger.d(
+            TAG,
+            "Target Config: ${config.remark} (${config.address}:${config.port}), " +
+                "Protocol: vless, Security: ${config.params["security"]}"
+        )
         _vpnState.value = VpnState.CONNECTING
         instance = this
 
@@ -102,7 +106,8 @@ class XrayVpnService : VpnService() {
                     "NetBox VPN Service",
                     NotificationManager.IMPORTANCE_LOW
                 )
-                val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                val notificationManager =
+                    getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.createNotificationChannel(channel)
 
                 val notification = Notification.Builder(this, channelId)
