@@ -10,7 +10,8 @@ object XrayConfigBuilder {
         proxyPool: List<VlessConfig> = listOf(config),
         probeUrl: String = "https://one.one.one.one",
         observatoryIntervalSeconds: Int = 30,
-        probeTimeoutSeconds: Int = 1
+        probeTimeoutSeconds: Int = 1,
+        probeMethod: String = "GET"
     ): String {
         val configs = (proxyPool.ifEmpty { listOf(config) }).distinctBy { it.rawUri }
         val root = JSONObject()
@@ -88,7 +89,7 @@ object XrayConfigBuilder {
                 put("interval", "${observatoryIntervalSeconds.coerceAtLeast(10)}s")
                 put("sampling", 1)
                 put("timeout", "${probeTimeoutSeconds.coerceAtLeast(1)}s")
-                put("httpMethod", "GET")
+                put("httpMethod", if (probeMethod.equals("HEAD", ignoreCase = true)) "HEAD" else "GET")
             })
         })
 
