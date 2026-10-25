@@ -18,6 +18,17 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Produce a separate APK for each ABI. Native libraries from both the
+    // LibXray AAR and src/main/jniLibs are packaged only for the matching ABI.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            isUniversalApk = false
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -58,4 +69,20 @@ dependencies {
     // generated bindings and libgojni.so together in the same AAR.
     implementation("io.github.wanliyunyan:libxray:26.10.10")
     debugImplementation("androidx.compose.ui:ui-tooling")
+}
+
+/**
+ * Builds all ABI-specific debug APKs and copies them to the repository-level
+ * build/apks/debug folder so they are easy to find on Windows and CI.
+ *
+ * Run: .\\gradlew.bat :app:collectDebugApks
+ */
+tasks.register<Sync>("collectDebugApks") {
+    group = "build"
+    description = "Builds and collects one debug APK per Android ABI"
+    dependsOn("assembleDebug")
+    from(layout.buildDirectory.dir("outputs/apk/debug")) {
+        include("*.apk")
+    }
+    into(rootProject.layout.buildDirectory.dir("apks/debug"))
 }
