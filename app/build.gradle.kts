@@ -54,9 +54,8 @@ dependencies {
     // Keep the generated Java bindings and libgojni.so from the same AAR.
     // Do not vendor separate libgojni.so copies in src/main/jniLibs: a stale
     // gomobile binary can load successfully but miss LibXray._init() symbols.
-    // 26.9.30 is an upstream release, but is not published under this Maven
-    // coordinate. 26.7.28 is the newest version available from Maven Central.
-    // Its LibXray API is v1 (runXray payload uses configPath).
-    implementation("io.github.wanliyunyan:libxray:26.7.28")
+    // Use the version published under this Maven coordinate and keep the
+    // generated bindings and libgojni.so together in the same AAR.
+    implementation("io.github.wanliyunyan:libxray:26.10.10")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
