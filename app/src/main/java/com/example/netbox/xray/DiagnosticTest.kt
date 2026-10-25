@@ -1,5 +1,6 @@
 package com.example.netbox.xray
 
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
@@ -7,7 +8,11 @@ import java.net.Socket
 import kotlin.system.measureTimeMillis
 
 object DiagnosticTest {
-    suspend fun runDiagnostics(subscriptionUrl: String, pingUrl: String): String = withContext(Dispatchers.IO) {
+    suspend fun runDiagnostics(
+        context: Context,
+        subscriptionUrl: String,
+        pingUrl: String
+    ): String = withContext(Dispatchers.IO) {
         val report = StringBuilder()
         report.appendLine("=== NetBox Диагностика ===")
         report.appendLine("Время: ${java.util.Date()}")
@@ -30,7 +35,7 @@ object DiagnosticTest {
         if (subscriptionUrl.isBlank()) {
             report.appendLine("-> ОШИБКА: URL подписки не указан в настройках")
         } else {
-            val configs = SubscriptionFetcher.fetchVlessConfigs(subscriptionUrl)
+            val configs = SubscriptionFetcher.fetchVlessConfigs(context, subscriptionUrl).configs
             if (configs.isEmpty()) {
                 report.appendLine("-> ОШИБКА: Подписка не загружена или не содержит VLESS ссылок")
             } else {
