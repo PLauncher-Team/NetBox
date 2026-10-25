@@ -46,7 +46,7 @@ object PingTester {
 
                     synchronized(this@PingTester) {
                         completedCount++
-                        if (delayMs > 0 && (bestConfigSoFar == null || delayMs < (bestConfigSoFar?.pingMs ?: Long.MAX_VALUE))) {
+                        if (delayMs >= 0 && (bestConfigSoFar == null || delayMs < (bestConfigSoFar?.pingMs ?: Long.MAX_VALUE))) {
                             bestConfigSoFar = config
                         }
                         onProgress(completedCount, configs.size, bestConfigSoFar)
@@ -60,12 +60,12 @@ object PingTester {
 
         val testedConfigs = deferreds.awaitAll()
         val sorted = testedConfigs.sortedWith(
-            compareBy<VlessConfig> { if (it.pingMs > 0) 0 else 1 }
-                .thenBy { if (it.pingMs > 0) it.pingMs else Long.MAX_VALUE }
+            compareBy<VlessConfig> { if (it.pingMs >= 0) 0 else 1 }
+                .thenBy { if (it.pingMs >= 0) it.pingMs else Long.MAX_VALUE }
         )
 
-        AppLogger.d(TAG, "Ping testing completed. Total tested: ${sorted.size}, Reachable: ${sorted.count { it.pingMs > 0 }}")
-        val best = sorted.firstOrNull { it.pingMs > 0 }
+        AppLogger.d(TAG, "Ping testing completed. Total tested: ${sorted.size}, Reachable: ${sorted.count { it.pingMs >= 0 }}")
+        val best = sorted.firstOrNull { it.pingMs >= 0 }
         if (best != null) {
             AppLogger.d(TAG, "Best server selected: [${best.remark}] (${best.address}:${best.port}) with ${best.pingMs} ms")
         } else {
