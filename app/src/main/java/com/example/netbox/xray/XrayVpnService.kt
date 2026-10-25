@@ -119,12 +119,14 @@ class XrayVpnService : VpnService() {
             val jsonConfig = XrayConfigBuilder.buildJsonConfig(config)
             AppLogger.d(TAG, "Xray JSON Config Generated:\n$jsonConfig")
 
-            // LibXray v3 accepts a structured request and the JSON config itself,
-            // not a legacy "req"/"datDir" request.
+            // Maven Central currently provides LibXray 26.7.28, whose
+            // structured request API is v1 and reads the config from configPath.
+            val configFile = File(filesDir, "xray_config.json")
+            configFile.writeText(jsonConfig)
             val runRequestJson = JSONObject().apply {
-                put("apiVersion", 3)
+                put("apiVersion", 1)
                 put("method", "runXray")
-                put("payload", JSONObject().put("xrayJson", jsonConfig))
+                put("payload", JSONObject().put("configPath", configFile.absolutePath))
             }.toString()
 
             AppLogger.d(TAG, "Executing LibXray.invoke(runXray)...")
@@ -222,7 +224,7 @@ class XrayVpnService : VpnService() {
         if (xrayStarted) {
             try {
                 val stopRequestJson = JSONObject().apply {
-                    put("apiVersion", 3)
+                    put("apiVersion", 1)
                     put("method", "stopXray")
                     put("payload", JSONObject())
                 }.toString()
