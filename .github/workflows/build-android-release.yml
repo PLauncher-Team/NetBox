@@ -1,0 +1,98 @@
+name: Build Android Release
+
+on:
+  release:
+    types: [published]
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag/version (for example v1.0.0)
+        required: true
+        default: v1.0.0
+        type: string
+      upload_to_release:
+        description: Publish the built files to a GitHub Release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-android:
+    name: Build APK and Android App Bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.5'
+
+      - name: Compile Android packages
+        run: gradle --no-daemon --stacktrace :app:assembleDebug :app:assembleRelease :app:bundleRelease
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          # Debug APKs are signed by Android's debug key and can be installed directly.
+          for apk in app/build/outputs/apk/debug/*.apk; do
+            [ -f "$apk" ] || continue
+            abi="$(basename "$apk" .apk | sed 's/^app-//; s/-debug$//')"
+            cp "$apk" "dist/NetBox-${VERSION}-${abi}-debug.apk"
+          done
+
+          # Release APKs and AAB are unsigned unless release signing secrets are configured.
+          for apk in app/build/outputs/apk/release/*.apk; do
+            [ -f "$apk" ] || continue
+            abi="$(basename "$apk" .apk | sed 's/^app-//; s/-release$//')"
+            cp "$apk" "dist/NetBox-${VERSION}-${abi}-release-unsigned.apk"
+          done
+
+          for bundle in app/build/outputs/bundle/release/*.aab; do
+            [ -f "$bundle" ] || continue
+            cp "$bundle" "dist/NetBox-${VERSION}-unsigned.aab"
+          done
+
+          test -n "$(find dist -maxdepth 1 -type f -print -quit)"
+          ls -lh dist
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetBox-${{ env.VERSION }}-android
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload files to GitHub Release
+        if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload_to_release) }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          files: dist/*
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(env.VERSION, '-') }}
+          make_latest: ${{ !contains(env.VERSION, '-') }}
