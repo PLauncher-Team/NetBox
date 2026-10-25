@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 import java.io.File
-import kotlin.concurrent.thread
 
 enum class VpnState {
     DISCONNECTED,
@@ -187,11 +186,13 @@ class XrayVpnService : VpnService() {
             )
 
             AppLogger.d(TAG, "Starting HEV tunnel on FD ${pfd.fd}...")
+            // Mark it before the native call so cleanup also attempts to stop a
+            // partially initialized tunnel if the JNI entry point fails midway.
+            tunnelStarted = true
             val tunnelOk = TProxyService.TProxyStartService(hevConfigFile.absolutePath, pfd.fd)
             if (!tunnelOk) {
                 throw IllegalStateException("HEV tun2socks native service failed to start")
             }
-            tunnelStarted = true
             if (!TProxyService.TProxyIsRunning()) {
                 throw IllegalStateException("HEV tun2socks reports that it is not running")
             }
