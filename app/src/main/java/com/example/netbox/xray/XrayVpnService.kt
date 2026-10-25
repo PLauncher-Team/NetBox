@@ -41,7 +41,10 @@ class XrayVpnService : VpnService() {
         var currentConfig: VlessConfig? = null
 
         fun startVpn(context: Context, config: VlessConfig) {
-            AppLogger.d(TAG, "startVpn called for remark: ${config.remark}, address: ${config.address}:${config.port}")
+            AppLogger.d(
+                TAG,
+                "startVpn called for remark: ${config.remark}, address: ${config.address}:${config.port}"
+            )
             currentConfig = config
             val intent = Intent(context, XrayVpnService::class.java).apply {
                 action = "START"
@@ -66,8 +69,6 @@ class XrayVpnService : VpnService() {
         super.onCreate()
         instance = this
         AppLogger.d(TAG, "XrayVpnService onCreate starting...")
-        // Do not initialize native code here. Initialize it at connection time so
-        // startup failures can be reported and cleaned up without crashing the service.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -113,13 +114,9 @@ class XrayVpnService : VpnService() {
                 startForeground(1, notification)
                 AppLogger.d(TAG, "Foreground notification started (Android 8+ requirement met)")
             }
-
-            // 1. Build JSON & Run Xray Core via official LibXray library
             AppLogger.d(TAG, "Building Xray JSON config...")
             val jsonConfig = XrayConfigBuilder.buildJsonConfig(config)
             AppLogger.d(TAG, "Xray JSON Config Generated:\n$jsonConfig")
-
-            // LibXray 26.7.28 uses API v1 and reads JSON from configPath.
             val configFile = File(filesDir, "xray_config.json")
             configFile.writeText(jsonConfig)
             val runRequestJson = JSONObject().apply {
@@ -138,8 +135,6 @@ class XrayVpnService : VpnService() {
                 )
             }
             xrayStarted = true
-
-            // 2. Establish VPN TUN Interface
             AppLogger.d(TAG, "Establishing VpnService.Builder TUN interface...")
             val builder = Builder()
                 .setSession("NetBox VPN")
@@ -168,9 +163,6 @@ class XrayVpnService : VpnService() {
             }
             vpnInterface = pfd
             AppLogger.d(TAG, "TUN interface established successfully with FD: ${pfd.fd}")
-
-            // 3. Bridge TUN packets to Xray's local SOCKS5 inbound. The native
-            // library resolves this exact TProxyService class during JNI_OnLoad.
             val hevConfigFile = File(filesDir, "hev-socks5-tunnel.yaml")
             hevConfigFile.writeText(
                 """
@@ -187,8 +179,6 @@ class XrayVpnService : VpnService() {
             )
 
             AppLogger.d(TAG, "Starting HEV tunnel on FD ${pfd.fd}...")
-            // Mark it before the native call so cleanup also attempts to stop a
-            // partially initialized tunnel if the JNI entry point fails midway.
             tunnelStarted = true
             val tunnelOk = TProxyService.TProxyStartService(hevConfigFile.absolutePath, pfd.fd)
             if (!tunnelOk) {
