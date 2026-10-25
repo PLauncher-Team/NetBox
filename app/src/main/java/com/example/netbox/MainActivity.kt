@@ -6,6 +6,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -58,6 +59,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,12 +79,14 @@ import com.example.netbox.ui.theme.AppColorScheme
 import com.example.netbox.ui.theme.NetBoxTheme
 import com.example.netbox.xray.AppLogger
 import com.example.netbox.xray.PingTester
+import com.example.netbox.xray.ProxyTransport
 import com.example.netbox.xray.SubscriptionFetcher
 import com.example.netbox.xray.VlessConfig
 import com.example.netbox.xray.XrayVpnService
 import com.example.netbox.xray.VpnState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -96,7 +100,7 @@ class SettingsStore(context: Context) {
         set(value) = prefs.edit().putString("sub_url", value).apply()
 
     var pingUrl: String
-        get() = prefs.getString("ping_url", "https://web.telegram.org") ?: "https://web.telegram.org"
+        get() = prefs.getString("ping_url", "https://one.one.one.one") ?: "https://one.one.one.one"
         set(value) = prefs.edit().putString("ping_url", value).apply()
 
     var parallelPings: Int
@@ -104,8 +108,27 @@ class SettingsStore(context: Context) {
         set(value) = prefs.edit().putInt("parallel_pings", value).apply()
 
     var pingTimeoutSeconds: Int
-        get() = prefs.getInt("ping_timeout_sec", 3)
+        get() = prefs.getInt("ping_timeout_sec", 1)
         set(value) = prefs.edit().putInt("ping_timeout_sec", value).apply()
+
+    var observatoryIntervalSeconds: Int
+        get() = prefs.getInt("observatory_interval_sec", 30).coerceIn(10, 86400)
+        set(value) = prefs.edit().putInt("observatory_interval_sec", value.coerceIn(10, 86400)).apply()
+
+    var subscriptionRefreshMinutes: Int
+        get() = prefs.getInt("subscription_refresh_min", 60).coerceIn(1, 10080)
+        set(value) = prefs.edit().putInt("subscription_refresh_min", value.coerceIn(1, 10080)).apply()
+
+    var allowedTransports: Set<String>
+        get() = prefs.getStringSet("allowed_transports", ProxyTransport.defaultAllowed)
+            ?.toSet()
+            ?.takeIf { it.isNotEmpty() }
+            ?: ProxyTransport.defaultAllowed
+        set(value) {
+            if (value.isNotEmpty()) {
+                prefs.edit().putStringSet("allowed_transports", value.toSet()).apply()
+            }
+        }
 
     var isHttpPing: Boolean
         get() = prefs.getBoolean("is_http_ping", true)
@@ -168,6 +191,11 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var pingUrl by remember { mutableStateOf(settingsStore.pingUrl) }
     var parallelPingsText by remember { mutableStateOf(settingsStore.parallelPings.toString()) }
     var pingTimeoutText by remember { mutableStateOf(settingsStore.pingTimeoutSeconds.toString()) }
+    var observatoryIntervalText by remember { mutableStateOf(settingsStore.observatoryIntervalSeconds.toString()) }
+    var subscriptionRefreshText by remember { mutableStateOf(settingsStore.subscriptionRefreshMinutes.toString()) }
+    var allowedTransports by remember { mutableStateOf(settingsStore.allowedTransports) }
+    var activeProxyPool by remember { mutableStateOf<List<VlessConfig>>(emptyList()) }
+    var lastSourceSubscriptionUris by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isHttpPing by remember { mutableStateOf(settingsStore.isHttpPing) }
     var enableDebugLogs by remember { mutableStateOf(settingsStore.enableDebugLogs) }
 
@@ -188,18 +216,34 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     val vpnState by XrayVpnService.vpnState.collectAsState()
     val connectedServer by XrayVpnService.connectedServer.collectAsState()
 
+    BackHandler(enabled = currentScreen == Screen.SETTINGS) {
+        currentScreen = Screen.HOME
+    }
+
     var statusMessage by remember { mutableStateOf("Отключено") }
     var isProcessing by remember { mutableStateOf(false) }
-    var pendingBestConfig by remember { mutableStateOf<VlessConfig?>(null) }
+    var pendingProxyPool by remember { mutableStateOf<List<VlessConfig>>(emptyList()) }
+    var maintenanceToken by remember { mutableStateOf(0) }
     var connectJob by remember { mutableStateOf<Job?>(null) }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            pendingBestConfig?.let { cfg ->
-                XrayVpnService.startVpn(context, cfg)
-                statusMessage = "Подключено: ${cfg.remark}"
+            val pool = pendingProxyPool
+            if (pool.isNotEmpty()) {
+                activeProxyPool = pool
+                XrayVpnService.startVpn(
+                    context,
+                    pool,
+                    settingsStore.observatoryIntervalSeconds,
+                    settingsStore.pingTimeoutSeconds,
+                    settingsStore.pingUrl
+                )
+                statusMessage = "Подключение: авто-выбор из ${pool.size} прокси"
+                maintenanceToken++
+            } else {
+                statusMessage = "Нет подходящих прокси"
             }
         } else {
             statusMessage = "Разрешение на VPN отклонено"
@@ -224,63 +268,82 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         }
 
         isProcessing = true
-        statusMessage = "Загрузка..."
+        statusMessage = "Загрузка подписки..."
 
         connectJob = coroutineScope.launch(Dispatchers.IO) {
             try {
-                val configs = SubscriptionFetcher.fetchVlessConfigs(subscriptionUrl)
+                val fetchResult = SubscriptionFetcher.fetchVlessConfigs(context, subscriptionUrl)
                 coroutineContext.ensureActive()
 
-                if (configs.isEmpty()) {
+                val transportFiltered = fetchResult.configs.filter { config ->
+                    ProxyTransport.allows(config.params["type"], allowedTransports)
+                }
+
+                if (transportFiltered.isEmpty()) {
                     withContext(Dispatchers.Main) {
-                        statusMessage = "Ошибка: подписка пуста"
+                        statusMessage = if (fetchResult.configs.isEmpty()) {
+                            "Ошибка: подписка пуста или недоступна"
+                        } else {
+                            "Нет прокси с разрешёнными транспортами"
+                        }
                         isProcessing = false
                     }
                     return@launch
                 }
 
                 withContext(Dispatchers.Main) {
-                    statusMessage = "Пингование 0/${configs.size}"
+                    statusMessage = "Проверка прокси 0/${transportFiltered.size}"
                 }
-                val count = parallelPingsText.toIntOrNull() ?: 15
-                val timeoutSec = pingTimeoutText.toIntOrNull() ?: 1
+
+                val parallelCount = (parallelPingsText.toIntOrNull() ?: 15).coerceIn(1, 100)
+                val timeoutSeconds = (pingTimeoutText.toIntOrNull() ?: 1).coerceIn(1, 60)
+                val timeoutMs = timeoutSeconds * 1000
 
                 val testedConfigs = PingTester.testAll(
-                    configs = configs,
+                    configs = transportFiltered,
                     pingUrl = pingUrl,
-                    parallelCount = count,
-                    timeoutMs = timeoutSec * 1000,
+                    parallelCount = parallelCount,
+                    timeoutMs = timeoutMs,
                     isHttpFull = isHttpPing
                 ) { completed, total, _ ->
                     coroutineScope.launch(Dispatchers.Main) {
-                        statusMessage = "Пингование $completed/$total"
+                        statusMessage = "Проверка прокси $completed/$total"
                     }
                 }
-
                 coroutineContext.ensureActive()
 
-                val bestServer = testedConfigs.firstOrNull { it.pingMs > 0 }
-                if (bestServer == null) {
+                val healthyConfigs = testedConfigs.filter {
+                    it.pingMs >= 0L && it.pingMs <= timeoutMs.toLong()
+                }
+
+                if (healthyConfigs.isEmpty()) {
                     withContext(Dispatchers.Main) {
-                        statusMessage = "Ошибка: нет серверов"
+                        statusMessage = "Нет доступных прокси с пингом до ${timeoutSeconds} с"
                         isProcessing = false
                     }
                     return@launch
                 }
 
-                pendingBestConfig = bestServer
                 withContext(Dispatchers.Main) {
-                    statusMessage = "Подключение..."
-                }
+                    lastSourceSubscriptionUris = fetchResult.configs.map { it.rawUri }.toSet()
+                    pendingProxyPool = healthyConfigs
+                    statusMessage = "Подключение через пул из ${healthyConfigs.size} прокси..."
 
-                val intent = VpnService.prepare(context)
-                if (intent != null) {
-                    vpnPermissionLauncher.launch(intent)
-                } else {
-                    XrayVpnService.startVpn(context, bestServer)
-                    withContext(Dispatchers.Main) {
-                        statusMessage = "Подключено: ${bestServer.remark}"
+                    val intent = VpnService.prepare(context)
+                    if (intent != null) {
+                        vpnPermissionLauncher.launch(intent)
+                    } else {
+                        activeProxyPool = healthyConfigs
+                        XrayVpnService.startVpn(
+                            context,
+                            healthyConfigs,
+                            settingsStore.observatoryIntervalSeconds,
+                            timeoutSeconds,
+                            pingUrl
+                        )
+                        statusMessage = "Подключение: авто-выбор из ${healthyConfigs.size} прокси"
                         isProcessing = false
+                        maintenanceToken++
                     }
                 }
             } catch (_: CancellationException) {
@@ -288,7 +351,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     statusMessage = "Отключено"
                     isProcessing = false
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                AppLogger.e("NetBoxLog-Connect", "Connection setup failed: ${e.message}", e)
                 withContext(Dispatchers.Main) {
                     statusMessage = "Ошибка подключения"
                     isProcessing = false
@@ -423,7 +487,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                                     Text(
                                         text = if (isConnected && connectedServer != null) {
-                                            "Подключено: ${connectedServer?.remark}"
+                                            "Подключено · прокси в пуле: ${activeProxyPool.size}"
                                         } else {
                                             statusMessage
                                         },
