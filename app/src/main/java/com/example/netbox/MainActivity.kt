@@ -100,7 +100,13 @@ class SettingsStore(context: Context) {
         set(value) = prefs.edit().putString("sub_url", value).apply()
 
     var pingUrl: String
-        get() = prefs.getString("ping_url", "https://one.one.one.one") ?: "https://one.one.one.one"
+        get() = prefs.getString("ping_url", null).let { saved ->
+            if (saved.isNullOrBlank() || saved == "https://web.telegram.org") {
+                "https://one.one.one.one"
+            } else {
+                saved
+            }
+        }
         set(value) = prefs.edit().putString("ping_url", value).apply()
 
     var parallelPings: Int
@@ -238,7 +244,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     pool,
                     settingsStore.observatoryIntervalSeconds,
                     settingsStore.pingTimeoutSeconds,
-                    settingsStore.pingUrl
+                    settingsStore.pingUrl,
+                    if (settingsStore.isHttpPing) "GET" else "HEAD"
                 )
                 statusMessage = "Подключение: авто-выбор из ${pool.size} прокси"
                 maintenanceToken++
@@ -341,7 +348,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                             healthyConfigs,
                             settingsStore.observatoryIntervalSeconds,
                             timeoutSeconds,
-                            pingUrl
+                            pingUrl,
+                            if (isHttpPing) "GET" else "HEAD"
                         )
                         statusMessage = "Подключение: авто-выбор из ${healthyConfigs.size} прокси"
                         isProcessing = false
@@ -693,7 +701,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                                 isHttpPing = true
                                                 settingsStore.isHttpPing = true
                                             },
-                                            label = { Text("Полноценный (HTTP)") }
+                                            label = { Text("Полный ответ (GET)") }
                                         )
                                         FilterChip(
                                             selected = !isHttpPing,
@@ -701,7 +709,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                                 isHttpPing = false
                                                 settingsStore.isHttpPing = false
                                             },
-                                            label = { Text("Быстрый (TCP)") }
+                                            label = { Text("Быстрый (HEAD)") }
                                         )
                                     }
 
@@ -960,7 +968,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     healthyConfigs,
                     (observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400),
                     timeoutSeconds,
-                    pingUrl
+                    pingUrl,
+                    if (isHttpPing) "GET" else "HEAD"
                 )
                 statusMessage = "Подписка обновлена · прокси в пуле: ${healthyConfigs.size}"
             }
@@ -1004,7 +1013,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                         healthyPool,
                         (observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400),
                         timeoutSeconds,
-                        pingUrl
+                        pingUrl,
+                        if (isHttpPing) "GET" else "HEAD"
                     )
                 }
             }
