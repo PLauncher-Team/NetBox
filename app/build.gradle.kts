@@ -17,9 +17,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-
-    // Produce a separate APK for each ABI. Native libraries from both the
-    // LibXray AAR and src/main/jniLibs are packaged only for the matching ABI.
     splits {
         abi {
             isEnable = true
@@ -62,19 +59,10 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    // 26.7.28 is the newest version currently published under this Maven
-    // coordinate. Its LibXray API uses apiVersion 1 (configPath payload).
-    // Keep Java bindings and libgojni.so together in this single AAR.
     implementation("io.github.wanliyunyan:libxray:26.7.28")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
-/**
- * Builds all ABI-specific debug APKs and copies them to the repository-level
- * build/apks/debug folder so they are easy to find on Windows and CI.
- *
- * Run: .\\gradlew.bat :app:collectDebugApks
- */
 tasks.register<Sync>("collectDebugApks") {
     group = "build"
     description = "Builds and collects one debug APK per Android ABI"
