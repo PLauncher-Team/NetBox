@@ -125,6 +125,15 @@ object XrayConfigBuilder {
                         }
                         put("grpcSettings", grpcSettings)
                     }
+                    "xhttp" -> {
+                        val xhttpSettings = JSONObject().apply {
+                            put("path", config.params["path"] ?: "/")
+                            val host = config.params["host"] ?: config.params["sni"]
+                            if (!host.isNullOrBlank()) put("host", host)
+                            put("mode", config.params["mode"] ?: "auto")
+                        }
+                        put("xhttpSettings", xhttpSettings)
+                    }
                 }
             }
             put("streamSettings", streamSettings)
