@@ -1,4 +1,4 @@
-name: Android CI
+name: Android Checks
 
 on:
   push:
@@ -9,12 +9,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-ci-${{ github.ref }}
+  group: android-checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   verify:
-    name: Build, lint, and test
+    name: Lint and unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -33,14 +33,5 @@ jobs:
         with:
           gradle-version: '8.14.5'
 
-      - name: Run lint, unit tests, and build ABI APKs
-        run: gradle --no-daemon --stacktrace :app:lintDebug :app:testDebugUnitTest :app:collectDebugApks
-
-      - name: Upload debug APKs
-        if: success()
-        uses: actions/upload-artifact@v7
-        with:
-          name: netbox-debug-apks
-          path: build/apks/debug/*.apk
-          if-no-files-found: error
-          retention-days: 14
+      - name: Run Android Lint and unit tests
+        run: gradle --no-daemon --stacktrace :app:lintDebug :app:testDebugUnitTest
