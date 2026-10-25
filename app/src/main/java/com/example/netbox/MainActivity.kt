@@ -120,7 +120,7 @@ class SettingsStore(context: Context) {
         set(value) = prefs.edit().putInt("subscription_refresh_min", value.coerceIn(1, 10080)).apply()
 
     var allowedTransports: Set<String>
-        get() = prefs.getStringSet("allowed_transports", ProxyTransport.defaultAllowed)
+        get() = prefs.getStringSet("allowed_transports", ProxyTransport.defaultAllowed.toMutableSet())
             ?.toSet()
             ?.takeIf { it.isNotEmpty() }
             ?: ProxyTransport.defaultAllowed
@@ -918,28 +918,17 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             val fetched = withContext(Dispatchers.IO) {
                 SubscriptionFetcher.fetchVlessConfigs(context, subscriptionUrl)
             }
-            // On download errors SubscriptionFetcher returns cached data. Keep the current
-            // connection untouched instead of replacing its working pool with stale data.
-            if (fetched.loadedFromCache || fetched.configs.isEmpty()) return false
+            if (fetched.configs.isEmpty()) return false
+            // When a live pool exists, a failed scheduled fetch must never replace it with stale data.
+            // If every active proxy failed, cached data is still useful as a recovery candidate.
+            if (fetched.loadedFromCache && activeProxyPool.isNotEmpty()) return false
 
             val sourceUris = fetched.configs.map { it.rawUri }.toSet()
-            val sourceChanged = sourceUris != knownSourceUris
-            if (!force && !sourceChanged) {
-                knownSourceUris = sourceUris
-                lastSourceSubscriptionUris = sourceUris
-                return false
-            }
-
-            val candidatesToTest = if (force || knownSourceUris.isEmpty()) {
-                fetched.configs
-            } else {
-                fetched.configs.filter { it.rawUri !in knownSourceUris }
-            }
-            val allowedCandidates = candidatesToTest.filter {
+            val allowedCandidates = fetched.configs.filter {
                 ProxyTransport.allows(it.params["type"], allowedTransports)
             }
             val timeoutSeconds = (pingTimeoutText.toIntOrNull() ?: 1).coerceIn(1, 60)
-            val testedNewConfigs = if (allowedCandidates.isEmpty()) {
+            val testedConfigs = if (allowedCandidates.isEmpty()) {
                 emptyList()
             } else {
                 withContext(Dispatchers.IO) {
@@ -952,45 +941,31 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     ) { _, _, _ -> }
                 }
             }
-            val healthyNewConfigs = testedNewConfigs.filter {
+            val healthyConfigs = testedConfigs.filter {
                 it.pingMs >= 0L && it.pingMs <= timeoutSeconds * 1000L
-            }
+            }.sortedBy { it.pingMs }
 
-            val retainedConfigs = if (force || sourceChanged) {
-                activeProxyPool.filter {
-                    it.rawUri in sourceUris && ProxyTransport.allows(it.params["type"], allowedTransports)
-                }
-            } else {
-                activeProxyPool
-            }
-            val updatedPool = if (force || knownSourceUris.isEmpty()) {
-                healthyNewConfigs
-            } else {
-                (retainedConfigs + healthyNewConfigs).distinctBy { it.rawUri }
-            }
-
+            // A failed refresh is not allowed to tear down a still-working session.
+            if (healthyConfigs.isEmpty() && activeProxyPool.isNotEmpty()) return false
             knownSourceUris = sourceUris
             lastSourceSubscriptionUris = sourceUris
-            if (updatedPool.isEmpty()) return false
+            if (healthyConfigs.isEmpty()) return false
 
             val currentIds = activeProxyPool.map { it.rawUri }.toSet()
-            val updatedIds = updatedPool.map { it.rawUri }.toSet()
+            val updatedIds = healthyConfigs.map { it.rawUri }.toSet()
             if (currentIds != updatedIds) {
-                activeProxyPool = updatedPool.sortedWith(
-                    compareBy<VlessConfig> { if (it.pingMs >= 0L) 0 else 1 }.thenBy { it.pingMs }
-                )
+                activeProxyPool = healthyConfigs
                 XrayVpnService.updateProxyPool(
                     context,
-                    activeProxyPool,
+                    healthyConfigs,
                     (observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400),
                     timeoutSeconds,
                     pingUrl
                 )
-                statusMessage = "Подписка обновлена · прокси в пуле: ${activeProxyPool.size}"
+                statusMessage = "Подписка обновлена · прокси в пуле: ${healthyConfigs.size}"
             }
             return currentIds != updatedIds
         }
-
         while (true) {
             delay((observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400) * 1000L)
             if (XrayVpnService.vpnState.value != VpnState.CONNECTED) break
