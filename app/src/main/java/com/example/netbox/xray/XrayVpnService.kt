@@ -27,9 +27,15 @@ class XrayVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var xrayStarted = false
     private var tunnelStarted = false
+    private var activeProxyPool: List<VlessConfig> = emptyList()
+    private var activeProbeUrl = "https://one.one.one.one"
+    private var activeObservatoryIntervalSeconds = 30
+    private var activeProbeTimeoutSeconds = 1
 
     companion object {
         private const val TAG = "NetBoxLog-Service"
+        private const val DEFAULT_PROBE_URL = "https://one.one.one.one"
+
         var instance: XrayVpnService? = null
 
         private val _vpnState = MutableStateFlow(VpnState.DISCONNECTED)
@@ -39,13 +45,28 @@ class XrayVpnService : VpnService() {
         val connectedServer: StateFlow<VlessConfig?> = _connectedServer.asStateFlow()
 
         var currentConfig: VlessConfig? = null
+        @Volatile private var pendingProxyPool: List<VlessConfig> = emptyList()
+        @Volatile private var pendingProbeUrl: String = DEFAULT_PROBE_URL
+        @Volatile private var pendingObservatoryIntervalSeconds: Int = 30
+        @Volatile private var pendingProbeTimeoutSeconds: Int = 1
 
-        fun startVpn(context: Context, config: VlessConfig) {
-            AppLogger.d(
-                TAG,
-                "startVpn called for remark: ${config.remark}, address: ${config.address}:${config.port}"
-            )
-            currentConfig = config
+        fun startVpn(
+            context: Context,
+            configs: List<VlessConfig>,
+            observatoryIntervalSeconds: Int = 30,
+            probeTimeoutSeconds: Int = 1,
+            probeUrl: String = DEFAULT_PROBE_URL
+        ) {
+            val pool = configs.distinctBy { it.rawUri }
+                .sortedWith(compareBy<VlessConfig> { if (it.pingMs >= 0) 0 else 1 }.thenBy { it.pingMs })
+            if (pool.isEmpty()) return
+
+            pendingProxyPool = pool
+            pendingProbeUrl = probeUrl.ifBlank { DEFAULT_PROBE_URL }
+            pendingObservatoryIntervalSeconds = observatoryIntervalSeconds.coerceAtLeast(10)
+            pendingProbeTimeoutSeconds = probeTimeoutSeconds.coerceAtLeast(1)
+            currentConfig = pool.first()
+
             val intent = Intent(context, XrayVpnService::class.java).apply {
                 action = "START"
             }
@@ -54,6 +75,32 @@ class XrayVpnService : VpnService() {
             } else {
                 context.startService(intent)
             }
+        }
+
+        fun startVpn(context: Context, config: VlessConfig) {
+            startVpn(context, listOf(config))
+        }
+
+        fun updateProxyPool(
+            context: Context,
+            configs: List<VlessConfig>,
+            observatoryIntervalSeconds: Int,
+            probeTimeoutSeconds: Int,
+            probeUrl: String
+        ) {
+            val pool = configs.distinctBy { it.rawUri }
+                .sortedWith(compareBy<VlessConfig> { if (it.pingMs >= 0) 0 else 1 }.thenBy { it.pingMs })
+            if (pool.isEmpty()) return
+
+            pendingProxyPool = pool
+            pendingProbeUrl = probeUrl.ifBlank { DEFAULT_PROBE_URL }
+            pendingObservatoryIntervalSeconds = observatoryIntervalSeconds.coerceAtLeast(10)
+            pendingProbeTimeoutSeconds = probeTimeoutSeconds.coerceAtLeast(1)
+
+            val intent = Intent(context, XrayVpnService::class.java).apply {
+                action = "UPDATE_POOL"
+            }
+            context.startService(intent)
         }
 
         fun stopVpn(context: Context) {
@@ -73,30 +120,35 @@ class XrayVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         instance = this
-        val action = intent?.action
-        AppLogger.d(TAG, "onStartCommand received action: $action")
-        when (action) {
-            "START" -> startVpnInternal()
+        when (intent?.action) {
+            "START" -> {
+                if (vpnInterface != null && tunnelStarted) {
+                    updateProxyPoolInternal()
+                } else {
+                    startVpnInternal()
+                }
+            }
+            "UPDATE_POOL" -> updateProxyPoolInternal()
             "STOP" -> stopVpnInternal()
         }
         return START_NOT_STICKY
     }
 
     private fun startVpnInternal() {
-        val config = currentConfig
+        val pool = pendingProxyPool.ifEmpty { listOfNotNull(currentConfig) }
+        val config = pool.firstOrNull()
         if (config == null) {
-            AppLogger.e(TAG, "startVpnInternal aborted: currentConfig is null")
+            AppLogger.e(TAG, "startVpnInternal aborted: no proxy configs")
+            stopSelf()
             return
         }
 
-        AppLogger.d(TAG, "=== STARTING VPN INTERNAL ===")
-        AppLogger.d(
-            TAG,
-            "Target Config: ${config.remark} (${config.address}:${config.port}), " +
-                "Protocol: vless, Security: ${config.params["security"]}"
-        )
+        currentConfig = config
+        activeProxyPool = pool
+        activeProbeUrl = pendingProbeUrl
+        activeObservatoryIntervalSeconds = pendingObservatoryIntervalSeconds
+        activeProbeTimeoutSeconds = pendingProbeTimeoutSeconds
         _vpnState.value = VpnState.CONNECTING
-        instance = this
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -106,8 +158,7 @@ class XrayVpnService : VpnService() {
                     "NetBox VPN Service",
                     NotificationManager.IMPORTANCE_LOW
                 )
-                val notificationManager =
-                    getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.createNotificationChannel(channel)
 
                 val notification = Notification.Builder(this, channelId)
@@ -117,30 +168,15 @@ class XrayVpnService : VpnService() {
                     .build()
 
                 startForeground(1, notification)
-                AppLogger.d(TAG, "Foreground notification started (Android 8+ requirement met)")
             }
-            AppLogger.d(TAG, "Building Xray JSON config...")
-            val jsonConfig = XrayConfigBuilder.buildJsonConfig(config)
-            AppLogger.d(TAG, "Xray JSON Config Generated:\n$jsonConfig")
-            val configFile = File(filesDir, "xray_config.json")
-            configFile.writeText(jsonConfig)
-            val runRequestJson = JSONObject().apply {
-                put("apiVersion", 1)
-                put("method", "runXray")
-                put("payload", JSONObject().put("configPath", configFile.absolutePath))
-            }.toString()
 
-            AppLogger.d(TAG, "Executing LibXray.invoke(runXray)...")
-            val result = LibXray.invoke(runRequestJson)
-            AppLogger.d(TAG, "LibXray.invoke result: $result")
-            val response = JSONObject(result)
-            if (!response.optBoolean("success", false)) {
-                throw IllegalStateException(
-                    response.optString("error").ifBlank { "LibXray did not start Xray core" }
-                )
-            }
-            xrayStarted = true
-            AppLogger.d(TAG, "Establishing VpnService.Builder TUN interface...")
+            startXrayEngine(
+                activeProxyPool,
+                activeProbeUrl,
+                activeObservatoryIntervalSeconds,
+                activeProbeTimeoutSeconds
+            )
+
             val builder = Builder()
                 .setSession("NetBox VPN")
                 .addAddress("10.0.0.2", 24)
@@ -162,12 +198,10 @@ class XrayVpnService : VpnService() {
 
             val pfd = builder.establish()
             if (pfd == null) {
-                AppLogger.e(TAG, "CRITICAL: VpnService.Builder.establish() returned NULL!")
-                stopVpnInternal()
-                return
+                throw IllegalStateException("VpnService.Builder.establish() returned null")
             }
             vpnInterface = pfd
-            AppLogger.d(TAG, "TUN interface established successfully with FD: ${pfd.fd}")
+
             val hevConfigFile = File(filesDir, "hev-socks5-tunnel.yaml")
             hevConfigFile.writeText(
                 """
@@ -183,30 +217,131 @@ class XrayVpnService : VpnService() {
                 """.trimIndent()
             )
 
-            AppLogger.d(TAG, "Starting HEV tunnel on FD ${pfd.fd}...")
             tunnelStarted = true
             val tunnelOk = TProxyService.TProxyStartService(hevConfigFile.absolutePath, pfd.fd)
-            if (!tunnelOk) {
+            if (!tunnelOk || !TProxyService.TProxyIsRunning()) {
                 throw IllegalStateException("HEV tun2socks native service failed to start")
-            }
-            if (!TProxyService.TProxyIsRunning()) {
-                throw IllegalStateException("HEV tun2socks reports that it is not running")
             }
 
             _connectedServer.value = config
             _vpnState.value = VpnState.CONNECTED
-            AppLogger.d(TAG, "=== VPN STARTED & CONNECTED SUCCESSFULLY VIA TUN2SOCKS ===")
+            AppLogger.d(TAG, "VPN started with ${activeProxyPool.size} proxies in the Observatory pool")
         } catch (e: Throwable) {
-            AppLogger.e(TAG, "CRITICAL: Failed to start VPN internal: ${e.message}", e)
+            AppLogger.e(TAG, "Failed to start VPN: ${e.message}", e)
             stopVpnInternal()
         }
     }
 
+    private fun startXrayEngine(
+        pool: List<VlessConfig>,
+        probeUrl: String,
+        observatoryIntervalSeconds: Int,
+        probeTimeoutSeconds: Int
+    ) {
+        val primary = pool.firstOrNull()
+            ?: throw IllegalStateException("Cannot start Xray without a proxy")
+        val jsonConfig = XrayConfigBuilder.buildJsonConfig(
+            config = primary,
+            proxyPool = pool,
+            probeUrl = probeUrl,
+            observatoryIntervalSeconds = observatoryIntervalSeconds,
+            probeTimeoutSeconds = probeTimeoutSeconds
+        )
+        val configFile = File(filesDir, "xray_config.json")
+        configFile.writeText(jsonConfig)
+
+        val runRequestJson = JSONObject().apply {
+            put("apiVersion", 1)
+            put("method", "runXray")
+            put("payload", JSONObject().put("configPath", configFile.absolutePath))
+        }.toString()
+
+        AppLogger.d(TAG, "Starting Xray with ${pool.size} candidate proxies")
+        val result = LibXray.invoke(runRequestJson)
+        val response = JSONObject(result)
+        if (!response.optBoolean("success", false)) {
+            throw IllegalStateException(
+                response.optString("error").ifBlank { "LibXray did not start Xray core" }
+            )
+        }
+        xrayStarted = true
+        _connectedServer.value = primary
+    }
+
+    private fun stopXrayEngine() {
+        if (!xrayStarted) return
+        try {
+            val stopRequestJson = JSONObject().apply {
+                put("apiVersion", 1)
+                put("method", "stopXray")
+                put("payload", JSONObject())
+            }.toString()
+            val result = LibXray.invoke(stopRequestJson)
+            AppLogger.d(TAG, "LibXray stopXray result: $result")
+        } catch (e: Throwable) {
+            AppLogger.w(TAG, "Error stopping LibXray: ${e.message}")
+        } finally {
+            xrayStarted = false
+        }
+    }
+
+    private fun updateProxyPoolInternal() {
+        val newPool = pendingProxyPool
+        if (newPool.isEmpty()) return
+
+        // Service may still be coming up. Save the desired pool; START will use it.
+        if (vpnInterface == null || !tunnelStarted || !xrayStarted) {
+            activeProxyPool = newPool
+            activeProbeUrl = pendingProbeUrl
+            activeObservatoryIntervalSeconds = pendingObservatoryIntervalSeconds
+            activeProbeTimeoutSeconds = pendingProbeTimeoutSeconds
+            currentConfig = newPool.first()
+            return
+        }
+
+        val oldPool = activeProxyPool
+        val oldProbeUrl = activeProbeUrl
+        val oldInterval = activeObservatoryIntervalSeconds
+        val oldTimeout = activeProbeTimeoutSeconds
+        val oldCurrentConfig = currentConfig
+
+        try {
+            stopXrayEngine()
+            startXrayEngine(
+                newPool,
+                pendingProbeUrl,
+                pendingObservatoryIntervalSeconds,
+                pendingProbeTimeoutSeconds
+            )
+            activeProxyPool = newPool
+            activeProbeUrl = pendingProbeUrl
+            activeObservatoryIntervalSeconds = pendingObservatoryIntervalSeconds
+            activeProbeTimeoutSeconds = pendingProbeTimeoutSeconds
+            currentConfig = newPool.first()
+            _connectedServer.value = currentConfig
+            AppLogger.d(TAG, "Updated Observatory pool to ${newPool.size} proxies")
+        } catch (e: Throwable) {
+            AppLogger.e(TAG, "Could not apply refreshed proxy pool; restoring previous pool", e)
+            stopXrayEngine()
+            try {
+                startXrayEngine(oldPool, oldProbeUrl, oldInterval, oldTimeout)
+                activeProxyPool = oldPool
+                activeProbeUrl = oldProbeUrl
+                activeObservatoryIntervalSeconds = oldInterval
+                activeProbeTimeoutSeconds = oldTimeout
+                currentConfig = oldCurrentConfig
+                _connectedServer.value = oldCurrentConfig
+            } catch (restoreError: Throwable) {
+                AppLogger.e(TAG, "Could not restore previous Xray config", restoreError)
+                stopVpnInternal()
+            }
+        }
+    }
+
     private fun stopVpnInternal() {
-        AppLogger.d(TAG, "=== STOPPING VPN INTERNAL ===")
+        AppLogger.d(TAG, "Stopping VPN")
         if (tunnelStarted) {
             try {
-                AppLogger.d(TAG, "Stopping HEV tun2socks...")
                 TProxyService.TProxyStopService()
             } catch (e: Throwable) {
                 AppLogger.w(TAG, "Error stopping HEV tun2socks: ${e.message}")
@@ -215,39 +350,23 @@ class XrayVpnService : VpnService() {
             }
         }
 
-        if (xrayStarted) {
-            try {
-                val stopRequestJson = JSONObject().apply {
-                    put("apiVersion", 1)
-                    put("method", "stopXray")
-                    put("payload", JSONObject())
-                }.toString()
-                val result = LibXray.invoke(stopRequestJson)
-                AppLogger.d(TAG, "LibXray stopXray result: $result")
-            } catch (e: Throwable) {
-                AppLogger.w(TAG, "Error stopping LibXray: ${e.message}")
-            } finally {
-                xrayStarted = false
-            }
-        }
+        stopXrayEngine()
 
         try {
-            AppLogger.d(TAG, "Closing TUN ParcelFileDescriptor...")
             vpnInterface?.close()
             vpnInterface = null
         } catch (e: Throwable) {
             AppLogger.w(TAG, "Error closing vpnInterface: ${e.message}")
         }
 
+        activeProxyPool = emptyList()
         _connectedServer.value = null
         _vpnState.value = VpnState.DISCONNECTED
         instance = null
         stopSelf()
-        AppLogger.d(TAG, "=== VPN STOPPED ===")
     }
 
     override fun onDestroy() {
-        AppLogger.d(TAG, "onDestroy called")
         stopVpnInternal()
         instance = null
         super.onDestroy()
