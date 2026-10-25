@@ -31,6 +31,7 @@ class XrayVpnService : VpnService() {
     private var activeProbeUrl = "https://one.one.one.one"
     private var activeObservatoryIntervalSeconds = 30
     private var activeProbeTimeoutSeconds = 1
+    private var activeProbeMethod = "GET"
 
     companion object {
         private const val TAG = "NetBoxLog-Service"
@@ -49,13 +50,15 @@ class XrayVpnService : VpnService() {
         @Volatile private var pendingProbeUrl: String = DEFAULT_PROBE_URL
         @Volatile private var pendingObservatoryIntervalSeconds: Int = 30
         @Volatile private var pendingProbeTimeoutSeconds: Int = 1
+        @Volatile private var pendingProbeMethod: String = "GET"
 
         fun startVpn(
             context: Context,
             configs: List<VlessConfig>,
             observatoryIntervalSeconds: Int = 30,
             probeTimeoutSeconds: Int = 1,
-            probeUrl: String = DEFAULT_PROBE_URL
+            probeUrl: String = DEFAULT_PROBE_URL,
+            probeMethod: String = "GET"
         ) {
             val pool = configs.distinctBy { it.rawUri }
                 .sortedWith(compareBy<VlessConfig> { if (it.pingMs >= 0) 0 else 1 }.thenBy { it.pingMs })
@@ -65,6 +68,7 @@ class XrayVpnService : VpnService() {
             pendingProbeUrl = probeUrl.ifBlank { DEFAULT_PROBE_URL }
             pendingObservatoryIntervalSeconds = observatoryIntervalSeconds.coerceAtLeast(10)
             pendingProbeTimeoutSeconds = probeTimeoutSeconds.coerceAtLeast(1)
+            pendingProbeMethod = probeMethod.takeIf { it.equals("HEAD", ignoreCase = true) }?.uppercase() ?: "GET"
             currentConfig = pool.first()
 
             val intent = Intent(context, XrayVpnService::class.java).apply {
@@ -86,7 +90,8 @@ class XrayVpnService : VpnService() {
             configs: List<VlessConfig>,
             observatoryIntervalSeconds: Int,
             probeTimeoutSeconds: Int,
-            probeUrl: String
+            probeUrl: String,
+            probeMethod: String = "GET"
         ) {
             val pool = configs.distinctBy { it.rawUri }
                 .sortedWith(compareBy<VlessConfig> { if (it.pingMs >= 0) 0 else 1 }.thenBy { it.pingMs })
@@ -96,6 +101,7 @@ class XrayVpnService : VpnService() {
             pendingProbeUrl = probeUrl.ifBlank { DEFAULT_PROBE_URL }
             pendingObservatoryIntervalSeconds = observatoryIntervalSeconds.coerceAtLeast(10)
             pendingProbeTimeoutSeconds = probeTimeoutSeconds.coerceAtLeast(1)
+            pendingProbeMethod = probeMethod.takeIf { it.equals("HEAD", ignoreCase = true) }?.uppercase() ?: "GET"
 
             val intent = Intent(context, XrayVpnService::class.java).apply {
                 action = "UPDATE_POOL"
@@ -148,6 +154,7 @@ class XrayVpnService : VpnService() {
         activeProbeUrl = pendingProbeUrl
         activeObservatoryIntervalSeconds = pendingObservatoryIntervalSeconds
         activeProbeTimeoutSeconds = pendingProbeTimeoutSeconds
+        activeProbeMethod = pendingProbeMethod
         _vpnState.value = VpnState.CONNECTING
 
         try {
@@ -174,7 +181,8 @@ class XrayVpnService : VpnService() {
                 activeProxyPool,
                 activeProbeUrl,
                 activeObservatoryIntervalSeconds,
-                activeProbeTimeoutSeconds
+                activeProbeTimeoutSeconds,
+                activeProbeMethod
             )
 
             val builder = Builder()
@@ -236,7 +244,8 @@ class XrayVpnService : VpnService() {
         pool: List<VlessConfig>,
         probeUrl: String,
         observatoryIntervalSeconds: Int,
-        probeTimeoutSeconds: Int
+        probeTimeoutSeconds: Int,
+        probeMethod: String
     ) {
         val primary = pool.firstOrNull()
             ?: throw IllegalStateException("Cannot start Xray without a proxy")
@@ -245,7 +254,8 @@ class XrayVpnService : VpnService() {
             proxyPool = pool,
             probeUrl = probeUrl,
             observatoryIntervalSeconds = observatoryIntervalSeconds,
-            probeTimeoutSeconds = probeTimeoutSeconds
+            probeTimeoutSeconds = probeTimeoutSeconds,
+            probeMethod = probeMethod
         )
         val configFile = File(filesDir, "xray_config.json")
         configFile.writeText(jsonConfig)
@@ -295,6 +305,7 @@ class XrayVpnService : VpnService() {
             activeProbeUrl = pendingProbeUrl
             activeObservatoryIntervalSeconds = pendingObservatoryIntervalSeconds
             activeProbeTimeoutSeconds = pendingProbeTimeoutSeconds
+            activeProbeMethod = pendingProbeMethod
             currentConfig = newPool.first()
             return
         }
@@ -303,6 +314,7 @@ class XrayVpnService : VpnService() {
         val oldProbeUrl = activeProbeUrl
         val oldInterval = activeObservatoryIntervalSeconds
         val oldTimeout = activeProbeTimeoutSeconds
+        val oldMethod = activeProbeMethod
         val oldCurrentConfig = currentConfig
 
         try {
@@ -311,12 +323,14 @@ class XrayVpnService : VpnService() {
                 newPool,
                 pendingProbeUrl,
                 pendingObservatoryIntervalSeconds,
-                pendingProbeTimeoutSeconds
+                pendingProbeTimeoutSeconds,
+                pendingProbeMethod
             )
             activeProxyPool = newPool
             activeProbeUrl = pendingProbeUrl
             activeObservatoryIntervalSeconds = pendingObservatoryIntervalSeconds
             activeProbeTimeoutSeconds = pendingProbeTimeoutSeconds
+            activeProbeMethod = pendingProbeMethod
             currentConfig = newPool.first()
             _connectedServer.value = currentConfig
             AppLogger.d(TAG, "Updated Observatory pool to ${newPool.size} proxies")
@@ -324,11 +338,12 @@ class XrayVpnService : VpnService() {
             AppLogger.e(TAG, "Could not apply refreshed proxy pool; restoring previous pool", e)
             stopXrayEngine()
             try {
-                startXrayEngine(oldPool, oldProbeUrl, oldInterval, oldTimeout)
+                startXrayEngine(oldPool, oldProbeUrl, oldInterval, oldTimeout, oldMethod)
                 activeProxyPool = oldPool
                 activeProbeUrl = oldProbeUrl
                 activeObservatoryIntervalSeconds = oldInterval
                 activeProbeTimeoutSeconds = oldTimeout
+                activeProbeMethod = oldMethod
                 currentConfig = oldCurrentConfig
                 _connectedServer.value = oldCurrentConfig
             } catch (restoreError: Throwable) {
