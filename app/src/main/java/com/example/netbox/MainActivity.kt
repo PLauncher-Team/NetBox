@@ -254,6 +254,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     fun stopVpnProcess() {
         connectJob?.cancel()
         connectJob = null
+        pendingProxyPool = emptyList()
+        activeProxyPool = emptyList()
         XrayVpnService.stopVpn(context)
         statusMessage = "Отключено"
         isProcessing = false
@@ -619,6 +621,60 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                     Spacer(modifier = Modifier.height(16.dp))
 
                                     Text(
+                                        text = "Интервал Observatory (сек, минимум 10)",
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontWeight = FontWeight.SemiBold
+                                        ),
+                                        color = MaterialTheme.colorScheme.onBackground,
+                                        modifier = Modifier.padding(bottom = 6.dp)
+                                    )
+
+                                    OutlinedTextField(
+                                        value = observatoryIntervalText,
+                                        onValueChange = { input ->
+                                            if (input.all { it.isDigit() }) {
+                                                observatoryIntervalText = input
+                                                input.toIntOrNull()?.takeIf { it in 10..86400 }?.let {
+                                                    settingsStore.observatoryIntervalSeconds = it
+                                                }
+                                            }
+                                        },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = MaterialTheme.shapes.medium
+                                    )
+
+                                    Spacer(modifier = Modifier.height(16.dp))
+
+                                    Text(
+                                        text = "Интервал обновления подписки (мин)",
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontWeight = FontWeight.SemiBold
+                                        ),
+                                        color = MaterialTheme.colorScheme.onBackground,
+                                        modifier = Modifier.padding(bottom = 6.dp)
+                                    )
+
+                                    OutlinedTextField(
+                                        value = subscriptionRefreshText,
+                                        onValueChange = { input ->
+                                            if (input.all { it.isDigit() }) {
+                                                subscriptionRefreshText = input
+                                                input.toIntOrNull()?.takeIf { it in 1..10080 }?.let {
+                                                    settingsStore.subscriptionRefreshMinutes = it
+                                                }
+                                            }
+                                        },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = MaterialTheme.shapes.medium
+                                    )
+
+                                    Spacer(modifier = Modifier.height(16.dp))
+
+                                    Text(
                                         text = "Тип пинга",
                                         style = MaterialTheme.typography.titleMedium.copy(
                                             fontWeight = FontWeight.SemiBold
@@ -648,6 +704,47 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                             label = { Text("Быстрый (TCP)") }
                                         )
                                     }
+
+                                    Spacer(modifier = Modifier.height(16.dp))
+
+                                    Text(
+                                        text = "Разрешённые транспорты",
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontWeight = FontWeight.SemiBold
+                                        ),
+                                        color = MaterialTheme.colorScheme.onBackground,
+                                        modifier = Modifier.padding(bottom = 6.dp)
+                                    )
+
+                                    FlowRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        ProxyTransport.entries.forEach { transport ->
+                                            FilterChip(
+                                                selected = transport.key in allowedTransports,
+                                                onClick = {
+                                                    val updated = if (transport.key in allowedTransports) {
+                                                        allowedTransports - transport.key
+                                                    } else {
+                                                        allowedTransports + transport.key
+                                                    }
+                                                    if (updated.isNotEmpty()) {
+                                                        allowedTransports = updated
+                                                        settingsStore.allowedTransports = updated
+                                                    }
+                                                },
+                                                label = { Text(transport.label) }
+                                            )
+                                        }
+                                    }
+
+                                    Text(
+                                        text = "Неотмеченные типы исключаются. Отдельный QUIC отсутствует в используемой версии Xray.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
 
                                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -805,6 +902,144 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    LaunchedEffect(vpnState, maintenanceToken) {
+        if (vpnState != VpnState.CONNECTED || activeProxyPool.isEmpty()) {
+            return@LaunchedEffect
+        }
+
+        var knownSourceUris = lastSourceSubscriptionUris
+        var lastSubscriptionRefreshAt = System.currentTimeMillis()
+
+        suspend fun refreshSubscription(force: Boolean): Boolean {
+            val fetched = withContext(Dispatchers.IO) {
+                SubscriptionFetcher.fetchVlessConfigs(context, subscriptionUrl)
+            }
+            // On download errors SubscriptionFetcher returns cached data. Keep the current
+            // connection untouched instead of replacing its working pool with stale data.
+            if (fetched.loadedFromCache || fetched.configs.isEmpty()) return false
+
+            val sourceUris = fetched.configs.map { it.rawUri }.toSet()
+            val sourceChanged = sourceUris != knownSourceUris
+            if (!force && !sourceChanged) {
+                knownSourceUris = sourceUris
+                lastSourceSubscriptionUris = sourceUris
+                return false
+            }
+
+            val candidatesToTest = if (force || knownSourceUris.isEmpty()) {
+                fetched.configs
+            } else {
+                fetched.configs.filter { it.rawUri !in knownSourceUris }
+            }
+            val allowedCandidates = candidatesToTest.filter {
+                ProxyTransport.allows(it.params["type"], allowedTransports)
+            }
+            val timeoutSeconds = (pingTimeoutText.toIntOrNull() ?: 1).coerceIn(1, 60)
+            val testedNewConfigs = if (allowedCandidates.isEmpty()) {
+                emptyList()
+            } else {
+                withContext(Dispatchers.IO) {
+                    PingTester.testAll(
+                        configs = allowedCandidates,
+                        pingUrl = pingUrl,
+                        parallelCount = (parallelPingsText.toIntOrNull() ?: 15).coerceIn(1, 100),
+                        timeoutMs = timeoutSeconds * 1000,
+                        isHttpFull = isHttpPing
+                    ) { _, _, _ -> }
+                }
+            }
+            val healthyNewConfigs = testedNewConfigs.filter {
+                it.pingMs >= 0L && it.pingMs <= timeoutSeconds * 1000L
+            }
+
+            val retainedConfigs = if (force || sourceChanged) {
+                activeProxyPool.filter {
+                    it.rawUri in sourceUris && ProxyTransport.allows(it.params["type"], allowedTransports)
+                }
+            } else {
+                activeProxyPool
+            }
+            val updatedPool = if (force || knownSourceUris.isEmpty()) {
+                healthyNewConfigs
+            } else {
+                (retainedConfigs + healthyNewConfigs).distinctBy { it.rawUri }
+            }
+
+            knownSourceUris = sourceUris
+            lastSourceSubscriptionUris = sourceUris
+            if (updatedPool.isEmpty()) return false
+
+            val currentIds = activeProxyPool.map { it.rawUri }.toSet()
+            val updatedIds = updatedPool.map { it.rawUri }.toSet()
+            if (currentIds != updatedIds) {
+                activeProxyPool = updatedPool.sortedWith(
+                    compareBy<VlessConfig> { if (it.pingMs >= 0L) 0 else 1 }.thenBy { it.pingMs }
+                )
+                XrayVpnService.updateProxyPool(
+                    context,
+                    activeProxyPool,
+                    (observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400),
+                    timeoutSeconds,
+                    pingUrl
+                )
+                statusMessage = "Подписка обновлена · прокси в пуле: ${activeProxyPool.size}"
+            }
+            return currentIds != updatedIds
+        }
+
+        while (true) {
+            delay((observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400) * 1000L)
+            if (XrayVpnService.vpnState.value != VpnState.CONNECTED) break
+
+            val currentPool = activeProxyPool
+            val timeoutSeconds = (pingTimeoutText.toIntOrNull() ?: 1).coerceIn(1, 60)
+            val checkedPool = if (currentPool.isEmpty()) {
+                emptyList()
+            } else {
+                withContext(Dispatchers.IO) {
+                    PingTester.testAll(
+                        configs = currentPool,
+                        pingUrl = pingUrl,
+                        parallelCount = (parallelPingsText.toIntOrNull() ?: 15).coerceIn(1, 100),
+                        timeoutMs = timeoutSeconds * 1000,
+                        isHttpFull = isHttpPing
+                    ) { _, _, _ -> }
+                }
+            }
+            val healthyPool = checkedPool.filter {
+                it.pingMs >= 0L && it.pingMs <= timeoutSeconds * 1000L
+            }
+
+            if (healthyPool.isEmpty()) {
+                // Retire this active set and only repopulate it from a fresh subscription.
+                activeProxyPool = emptyList()
+                lastSubscriptionRefreshAt = System.currentTimeMillis()
+                refreshSubscription(force = true)
+            } else {
+                val healthyIds = healthyPool.map { it.rawUri }.toSet()
+                val currentIds = currentPool.map { it.rawUri }.toSet()
+                if (healthyIds != currentIds) {
+                    activeProxyPool = healthyPool
+                    XrayVpnService.updateProxyPool(
+                        context,
+                        healthyPool,
+                        (observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400),
+                        timeoutSeconds,
+                        pingUrl
+                    )
+                }
+            }
+
+            val now = System.currentTimeMillis()
+            val refreshIntervalMs = (subscriptionRefreshText.toIntOrNull() ?: 60)
+                .coerceIn(1, 10080) * 60_000L
+            if (now - lastSubscriptionRefreshAt >= refreshIntervalMs) {
+                lastSubscriptionRefreshAt = now
+                refreshSubscription(force = false)
             }
         }
     }
