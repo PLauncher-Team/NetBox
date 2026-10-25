@@ -139,7 +139,7 @@ object XrayConfigBuilder {
         val method = ProxyTransport.fromUriValue(config.params["type"])?.key ?: "raw"
         val security = config.params["security"] ?: "none"
         val streamSettings = JSONObject().apply {
-            put("method", method)
+            put("network", method)
             put("security", security)
 
             if (security == "reality") {
