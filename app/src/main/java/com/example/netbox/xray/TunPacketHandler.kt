@@ -29,18 +29,16 @@ class TunPacketHandler(
                     val length = inputStream.read(buffer)
                     if (length <= 0) continue
 
-                    // Parse IP Header
                     val version = (buffer[0].toInt() and 0xFF) shr 4
-                    if (version != 4) continue // IPv4 only for now
+                    if (version != 4) continue
 
                     val headerLen = (buffer[0].toInt() and 0x0F) * 4
                     val protocol = buffer[9].toInt() and 0xFF
 
-                    // Extract IPs
                     val srcIp = InetAddress.getByAddress(buffer.copyOfRange(12, 16))
                     val dstIp = InetAddress.getByAddress(buffer.copyOfRange(16, 20))
 
-                    if (protocol == 17) { // UDP (DNS / port 53)
+                    if (protocol == 17) {
                         val udpHeaderOffset = headerLen
                         val srcPort = ((buffer[udpHeaderOffset].toInt() and 0xFF) shl 8) or (buffer[udpHeaderOffset + 1].toInt() and 0xFF)
                         val dstPort = ((buffer[udpHeaderOffset + 2].toInt() and 0xFF) shl 8) or (buffer[udpHeaderOffset + 3].toInt() and 0xFF)
@@ -61,7 +59,7 @@ class TunPacketHandler(
                                 }
                             }
                         }
-                    } else if (protocol == 6) { // TCP
+                    } else if (protocol == 6) {
                         val tcpHeaderOffset = headerLen
                         val srcPort = ((buffer[tcpHeaderOffset].toInt() and 0xFF) shl 8) or (buffer[tcpHeaderOffset + 1].toInt() and 0xFF)
                         val dstPort = ((buffer[tcpHeaderOffset + 2].toInt() and 0xFF) shl 8) or (buffer[tcpHeaderOffset + 3].toInt() and 0xFF)
@@ -108,7 +106,7 @@ class TunPacketHandler(
         thread {
             try {
                 val socket = DatagramSocket()
-                XrayVpnService.instance?.protect(socket) // Защита DNS сокета от зацикливания
+                XrayVpnService.instance?.protect(socket)
                 socket.soTimeout = 3000
                 val dnsServer = InetAddress.getByName("1.1.1.1")
                 val sendPacket = DatagramPacket(dnsQuery, dnsQuery.size, dnsServer, 53)
@@ -135,29 +133,26 @@ class TunPacketHandler(
         val totalLen = 20 + 8 + payload.size
         val packet = ByteArray(totalLen)
 
-        // IPv4 Header
-        packet[0] = 0x45.toByte() // Ver 4, IHL 5
-        packet[1] = 0x00.toByte() // TOS
+        packet[0] = 0x45.toByte()
+        packet[1] = 0x00.toByte()
         packet[2] = ((totalLen shr 8) and 0xFF).toByte()
         packet[3] = (totalLen and 0xFF).toByte()
-        packet[4] = 0x00.toByte() // ID
+        packet[4] = 0x00.toByte()
         packet[5] = 0x00.toByte()
-        packet[6] = 0x40.toByte() // Flags: Don't Fragment
+        packet[6] = 0x40.toByte()
         packet[7] = 0x00.toByte()
-        packet[8] = 64.toByte()   // TTL
-        packet[9] = 17.toByte()   // Protocol UDP
-        packet[10] = 0x00.toByte() // Checksum
+        packet[8] = 64.toByte()
+        packet[9] = 17.toByte()
+        packet[10] = 0x00.toByte()
         packet[11] = 0x00.toByte()
 
         System.arraycopy(srcIp.address, 0, packet, 12, 4)
         System.arraycopy(dstIp.address, 0, packet, 16, 4)
 
-        // Calculate IPv4 Header Checksum
         val ipChecksum = computeChecksum(packet, 0, 20)
         packet[10] = ((ipChecksum shr 8) and 0xFF).toByte()
         packet[11] = (ipChecksum and 0xFF).toByte()
 
-        // UDP Header
         val udpLen = 8 + payload.size
         packet[20] = ((srcPort shr 8) and 0xFF).toByte()
         packet[21] = (srcPort and 0xFF).toByte()
@@ -165,7 +160,7 @@ class TunPacketHandler(
         packet[23] = (dstPort and 0xFF).toByte()
         packet[24] = ((udpLen shr 8) and 0xFF).toByte()
         packet[25] = (udpLen and 0xFF).toByte()
-        packet[26] = 0x00.toByte() // UDP Checksum (optional)
+        packet[26] = 0x00.toByte()
         packet[27] = 0x00.toByte()
 
         System.arraycopy(payload, 0, packet, 28, payload.size)

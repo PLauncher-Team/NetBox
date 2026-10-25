@@ -43,7 +43,6 @@ object SubscriptionFetcher {
 
         AppLogger.d(TAG, "Raw content fetched length: ${rawContent.length} chars")
 
-        // Try Base64 decoding
         var decoded = rawContent.trim()
         try {
             val clean = decoded.replace("\n", "").replace("\r", "").replace(" ", "")

@@ -109,7 +109,6 @@ class LocalProxyServer(
         val out = socket.getOutputStream()
         val inp = socket.getInputStream()
 
-        // SOCKS5 auth: noauth
         out.write(byteArrayOf(0x05, 0x01, 0x00))
         out.flush()
 
@@ -120,13 +119,12 @@ class LocalProxyServer(
             throw IllegalStateException("SOCKS5 auth failed")
         }
 
-        // SOCKS5 connect request
         val hostBytes = targetHost.toByteArray(Charsets.UTF_8)
         val req = ByteArray(7 + hostBytes.size)
-        req[0] = 0x05 // SOCKS5
-        req[1] = 0x01 // CONNECT
-        req[2] = 0x00 // RSV
-        req[3] = 0x03 // Domain type
+        req[0] = 0x05
+        req[1] = 0x01
+        req[2] = 0x00
+        req[3] = 0x03
         req[4] = hostBytes.size.toByte()
         System.arraycopy(hostBytes, 0, req, 5, hostBytes.size)
         val portOffset = 5 + hostBytes.size
@@ -136,7 +134,6 @@ class LocalProxyServer(
         out.write(req)
         out.flush()
 
-        // Read SOCKS5 reply (10 bytes)
         val reply = ByteArray(10)
         var read = 0
         while (read < 10) {

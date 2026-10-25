@@ -49,7 +49,6 @@ object VlessClient {
             rawSocket
         }
 
-        // === VLESS handshake (header) ===
         try {
             val header = buildVlessHeader(vlessConfig.uuid, targetHost, targetPort)
             val out = socket.getOutputStream()
@@ -76,23 +75,21 @@ object VlessClient {
 
     private fun buildVlessHeader(uuidStr: String, targetHost: String, targetPort: Int): ByteArray {
         val out = ByteArrayOutputStream()
-        out.write(0) // VLESS version 0
-        out.write(uuidToBytes(uuidStr)) // 16 bytes UUID
-        out.write(0) // Addons length 0
-        out.write(1) // Command: 1 = TCP
+        out.write(0)
+        out.write(uuidToBytes(uuidStr))
+        out.write(0)
+        out.write(1)
 
-        // Port (2 bytes BigEndian)
         out.write((targetPort shr 8) and 0xFF)
         out.write(targetPort and 0xFF)
 
-        // Address type & Address
         val ipv4 = parseIpv4(targetHost)
         if (ipv4 != null) {
-            out.write(1) // IPv4
+            out.write(1)
             out.write(ipv4)
         } else {
             val hostBytes = targetHost.toByteArray(Charsets.UTF_8)
-            out.write(2) // Domain
+            out.write(2)
             out.write(hostBytes.size and 0xFF)
             out.write(hostBytes)
         }

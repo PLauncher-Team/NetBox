@@ -185,7 +185,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var customColor by remember { mutableStateOf(Color(settingsStore.customColorArgb)) }
     var showColorPicker by remember { mutableStateOf(false) }
 
-    // VPN и логика подключения
     val vpnState by XrayVpnService.vpnState.collectAsState()
     val connectedServer by XrayVpnService.connectedServer.collectAsState()
 
@@ -194,7 +193,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var pendingBestConfig by remember { mutableStateOf<VlessConfig?>(null) }
     var connectJob by remember { mutableStateOf<Job?>(null) }
 
-    // Launcher для разрешения VPN
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -329,7 +327,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                 Box(
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    // Кнопка настроек в верхнем левом углу
+
                     IconButton(
                         onClick = {
                             currentScreen = if (currentScreen == Screen.HOME) Screen.SETTINGS else Screen.HOME
@@ -343,7 +341,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                         )
                     }
 
-                    // Название NetBox по центру сверху
                     Column(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -359,7 +356,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                         )
                     }
 
-                    // Анимированное переключение экранов
                     AnimatedContent(
                         targetState = currentScreen,
                         transitionSpec = {
@@ -385,7 +381,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                     val isConnected = vpnState == VpnState.CONNECTED
                                     val isActiveOrProcessing = isConnected || isProcessing
 
-                                    // Контейнер с круговой кнопкой и кольцом прогресса вокруг неё
                                     Box(
                                         modifier = Modifier
                                             .size(154.dp)
@@ -426,7 +421,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                         }
                                     }
 
-                                    // Краткий статус под кнопкой
                                     Text(
                                         text = if (isConnected && connectedServer != null) {
                                             "Подключено: ${connectedServer?.remark}"
@@ -453,7 +447,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                         .padding(top = 8.dp, bottom = 24.dp),
                                     horizontalAlignment = Alignment.Start
                                 ) {
-                                    // URL подписки
+
                                     Text(
                                         text = "Url подписки",
                                         style = MaterialTheme.typography.titleMedium.copy(
@@ -482,7 +476,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                                     Spacer(modifier = Modifier.height(16.dp))
 
-                                    // URL пинга
                                     Text(
                                         text = "Url пинга",
                                         style = MaterialTheme.typography.titleMedium.copy(
@@ -511,7 +504,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                                     Spacer(modifier = Modifier.height(16.dp))
 
-                                    // Количество параллельных пингов
                                     Text(
                                         text = "Количество параллельных пингов",
                                         style = MaterialTheme.typography.titleMedium.copy(
@@ -537,7 +529,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                                     Spacer(modifier = Modifier.height(16.dp))
 
-                                    // Таймаут пинга (сек)
                                     Text(
                                         text = "Таймаут пинга (сек)",
                                         style = MaterialTheme.typography.titleMedium.copy(
@@ -563,7 +554,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                                     Spacer(modifier = Modifier.height(16.dp))
 
-                                    // Тип пинга
                                     Text(
                                         text = "Тип пинга",
                                         style = MaterialTheme.typography.titleMedium.copy(
@@ -597,7 +587,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                                     Spacer(modifier = Modifier.height(16.dp))
 
-                                    // Переключатель дебаг логирования
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
@@ -622,7 +611,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                                     Spacer(modifier = Modifier.height(16.dp))
 
-                                    // Режим темы
                                     Text(
                                         text = "Режим темы",
                                         style = MaterialTheme.typography.titleMedium.copy(
@@ -664,7 +652,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                                     Spacer(modifier = Modifier.height(16.dp))
 
-                                    // Раздел цветовой схемы
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
@@ -700,7 +687,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                                     Spacer(modifier = Modifier.height(12.dp))
 
-                                    // 6 разноцветных кнопок
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,

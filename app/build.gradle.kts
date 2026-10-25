@@ -18,6 +18,15 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            isUniversalApk = false
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -27,6 +36,7 @@ android {
             )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -34,6 +44,7 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
+
     buildFeatures {
         compose = true
     }
@@ -51,7 +62,16 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("io.github.wanliyunyan:libxray:26.10.10")
+    implementation("io.github.wanliyunyan:libxray:26.7.28")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
+tasks.register<Sync>("collectDebugApks") {
+    group = "build"
+    description = "Builds and collects one debug APK per Android ABI"
+    dependsOn("assembleDebug")
+    from(layout.buildDirectory.dir("outputs/apk/debug")) {
+        include("*.apk")
+    }
+    into(rootProject.layout.buildDirectory.dir("apks/debug"))
+}

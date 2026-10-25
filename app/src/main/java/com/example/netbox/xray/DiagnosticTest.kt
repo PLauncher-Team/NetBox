@@ -14,7 +14,6 @@ object DiagnosticTest {
         report.appendLine("Android SDK: ${android.os.Build.VERSION.SDK_INT}")
         report.appendLine()
 
-        // 1. Прямой интернет
         report.appendLine("[1/4] Проверка интернет-соединения...")
         try {
             val start = System.currentTimeMillis()
@@ -27,7 +26,6 @@ object DiagnosticTest {
         }
         report.appendLine()
 
-        // 2. Скачивание подписки
         report.appendLine("[2/4] Проверка загрузки подписки...")
         if (subscriptionUrl.isBlank()) {
             report.appendLine("-> ОШИБКА: URL подписки не указан в настройках")
@@ -41,7 +39,6 @@ object DiagnosticTest {
                     report.appendLine("   #${i + 1}: ${c.remark} (${c.address}:${c.port})")
                 }
 
-                // 3. Пингование серверов
                 report.appendLine()
                 report.appendLine("[3/4] Проверка подключения к серверам...")
                 val tested = PingTester.testAll(
@@ -58,7 +55,6 @@ object DiagnosticTest {
                     report.appendLine("   • ${c.remark}: $status")
                 }
 
-                // 4. Проверка рукопожатия VLESS
                 report.appendLine()
                 report.appendLine("[4/4] Тест VLESS рукопожатия...")
                 val best = valid.firstOrNull()

@@ -8,14 +8,13 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import hev.socks5.tunnel.HevSocks5Tunnel
+import com.v2ray.ang.service.TProxyService
 import libXray.LibXray
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 import java.io.File
-import kotlin.concurrent.thread
 
 enum class VpnState {
     DISCONNECTED,
@@ -26,6 +25,8 @@ enum class VpnState {
 class XrayVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
+    private var xrayStarted = false
+    private var tunnelStarted = false
 
     companion object {
         private const val TAG = "NetBoxLog-Service"
@@ -40,7 +41,10 @@ class XrayVpnService : VpnService() {
         var currentConfig: VlessConfig? = null
 
         fun startVpn(context: Context, config: VlessConfig) {
-            AppLogger.d(TAG, "startVpn called for remark: ${config.remark}, address: ${config.address}:${config.port}")
+            AppLogger.d(
+                TAG,
+                "startVpn called for remark: ${config.remark}, address: ${config.address}:${config.port}"
+            )
             currentConfig = config
             val intent = Intent(context, XrayVpnService::class.java).apply {
                 action = "START"
@@ -65,12 +69,6 @@ class XrayVpnService : VpnService() {
         super.onCreate()
         instance = this
         AppLogger.d(TAG, "XrayVpnService onCreate starting...")
-        try {
-            LibXray.touch()
-            AppLogger.d(TAG, "LibXray touched and initialized successfully")
-        } catch (e: Throwable) {
-            AppLogger.e(TAG, "CRITICAL: Error in onCreate during LibXray init: ${e.message}", e)
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -92,7 +90,11 @@ class XrayVpnService : VpnService() {
         }
 
         AppLogger.d(TAG, "=== STARTING VPN INTERNAL ===")
-        AppLogger.d(TAG, "Target Config: ${config.remark} (${config.address}:${config.port}), Protocol: vless, Security: ${config.params["security"]}")
+        AppLogger.d(
+            TAG,
+            "Target Config: ${config.remark} (${config.address}:${config.port}), " +
+                "Protocol: vless, Security: ${config.params["security"]}"
+        )
         _vpnState.value = VpnState.CONNECTING
         instance = this
 
@@ -104,7 +106,8 @@ class XrayVpnService : VpnService() {
                     "NetBox VPN Service",
                     NotificationManager.IMPORTANCE_LOW
                 )
-                val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                val notificationManager =
+                    getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.createNotificationChannel(channel)
 
                 val notification = Notification.Builder(this, channelId)
@@ -116,29 +119,27 @@ class XrayVpnService : VpnService() {
                 startForeground(1, notification)
                 AppLogger.d(TAG, "Foreground notification started (Android 8+ requirement met)")
             }
-
-            // 1. Build JSON & Run Xray Core via official LibXray library
             AppLogger.d(TAG, "Building Xray JSON config...")
             val jsonConfig = XrayConfigBuilder.buildJsonConfig(config)
-            val datDir = filesDir.absolutePath
             AppLogger.d(TAG, "Xray JSON Config Generated:\n$jsonConfig")
-
+            val configFile = File(filesDir, "xray_config.json")
+            configFile.writeText(jsonConfig)
             val runRequestJson = JSONObject().apply {
-                put("req", "RunXray")
-                put("datDir", datDir)
-                put("xrayJson", jsonConfig)
+                put("apiVersion", 1)
+                put("method", "runXray")
+                put("payload", JSONObject().put("configPath", configFile.absolutePath))
             }.toString()
 
-            AppLogger.d(TAG, "Executing LibXray.invoke(RunXray)...")
-            val result = try {
-                LibXray.invoke(runRequestJson)
-            } catch (e: Exception) {
-                AppLogger.e(TAG, "LibXray.invoke error: ${e.message}", e)
-                ""
-            }
+            AppLogger.d(TAG, "Executing LibXray.invoke(runXray)...")
+            val result = LibXray.invoke(runRequestJson)
             AppLogger.d(TAG, "LibXray.invoke result: $result")
-
-            // 2. Establish VPN TUN Interface
+            val response = JSONObject(result)
+            if (!response.optBoolean("success", false)) {
+                throw IllegalStateException(
+                    response.optString("error").ifBlank { "LibXray did not start Xray core" }
+                )
+            }
+            xrayStarted = true
             AppLogger.d(TAG, "Establishing VpnService.Builder TUN interface...")
             val builder = Builder()
                 .setSession("NetBox VPN")
@@ -167,13 +168,12 @@ class XrayVpnService : VpnService() {
             }
             vpnInterface = pfd
             AppLogger.d(TAG, "TUN interface established successfully with FD: ${pfd.fd}")
-
-            // 3. Start HevSocks5Tunnel to bridge TUN packets (pfd.fd) to Xray SOCKS5 (127.0.0.1:10808)
-            val hevConfigFile = File(cacheDir, "hev_config.ini")
+            val hevConfigFile = File(filesDir, "hev-socks5-tunnel.yaml")
             hevConfigFile.writeText(
                 """
                 tunnel:
                   mtu: 8500
+                  ipv4: 10.0.0.2
                 socks5:
                   port: 10808
                   address: 127.0.0.1
@@ -183,14 +183,14 @@ class XrayVpnService : VpnService() {
                 """.trimIndent()
             )
 
-            thread(name = "NetBox-HevTunnel") {
-                try {
-                    AppLogger.d(TAG, "Starting HevSocks5Tunnel on FD ${pfd.fd}...")
-                    HevSocks5Tunnel.start(hevConfigFile.absolutePath, pfd.fd)
-                    AppLogger.d(TAG, "HevSocks5Tunnel thread finished")
-                } catch (e: Throwable) {
-                    AppLogger.e(TAG, "HevSocks5Tunnel exception: ${e.message}", e)
-                }
+            AppLogger.d(TAG, "Starting HEV tunnel on FD ${pfd.fd}...")
+            tunnelStarted = true
+            val tunnelOk = TProxyService.TProxyStartService(hevConfigFile.absolutePath, pfd.fd)
+            if (!tunnelOk) {
+                throw IllegalStateException("HEV tun2socks native service failed to start")
+            }
+            if (!TProxyService.TProxyIsRunning()) {
+                throw IllegalStateException("HEV tun2socks reports that it is not running")
             }
 
             _connectedServer.value = config
@@ -204,21 +204,31 @@ class XrayVpnService : VpnService() {
 
     private fun stopVpnInternal() {
         AppLogger.d(TAG, "=== STOPPING VPN INTERNAL ===")
-        try {
-            AppLogger.d(TAG, "Stopping HevSocks5Tunnel...")
-            HevSocks5Tunnel.stop()
-        } catch (e: Throwable) {
-            AppLogger.w(TAG, "Error stopping HevSocks5Tunnel: ${e.message}")
+        if (tunnelStarted) {
+            try {
+                AppLogger.d(TAG, "Stopping HEV tun2socks...")
+                TProxyService.TProxyStopService()
+            } catch (e: Throwable) {
+                AppLogger.w(TAG, "Error stopping HEV tun2socks: ${e.message}")
+            } finally {
+                tunnelStarted = false
+            }
         }
 
-        try {
-            val stopRequestJson = JSONObject().apply {
-                put("req", "StopXray")
-            }.toString()
-            val result = LibXray.invoke(stopRequestJson)
-            AppLogger.d(TAG, "LibXray StopXray result: $result")
-        } catch (e: Throwable) {
-            AppLogger.w(TAG, "Error stopping LibXray: ${e.message}")
+        if (xrayStarted) {
+            try {
+                val stopRequestJson = JSONObject().apply {
+                    put("apiVersion", 1)
+                    put("method", "stopXray")
+                    put("payload", JSONObject())
+                }.toString()
+                val result = LibXray.invoke(stopRequestJson)
+                AppLogger.d(TAG, "LibXray stopXray result: $result")
+            } catch (e: Throwable) {
+                AppLogger.w(TAG, "Error stopping LibXray: ${e.message}")
+            } finally {
+                xrayStarted = false
+            }
         }
 
         try {
