@@ -5,16 +5,16 @@ import org.json.JSONObject
 
 object XrayConfigBuilder {
 
-    fun buildJsonConfig(config: VlessConfig, localSocksPort: Int = 10808, localHttpPort: Int = 10809): String {
+    fun buildJsonConfig(
+        config: VlessConfig,
+        localSocksPort: Int = 10808,
+        localHttpPort: Int = 10809
+    ): String {
         val root = JSONObject()
-
-        // Log section
         val log = JSONObject().apply {
             put("loglevel", "warning")
         }
         root.put("log", log)
-
-        // DNS configuration
         val dns = JSONObject().apply {
             put("servers", JSONArray().apply {
                 put("1.1.1.1")
@@ -26,8 +26,6 @@ object XrayConfigBuilder {
             put("queryStrategy", "UseIP")
         }
         root.put("dns", dns)
-
-        // Inbounds (SOCKS, HTTP, and DNS)
         val inbounds = JSONArray().apply {
             put(JSONObject().apply {
                 put("tag", "socks-in")
@@ -58,13 +56,11 @@ object XrayConfigBuilder {
             })
         }
         root.put("inbounds", inbounds)
-
-        // Outbound (VLESS)
         val vnextUser = JSONObject().apply {
             put("id", config.uuid)
             put("encryption", config.params["encryption"] ?: "none")
             val flow = config.params["flow"]
-            if (!flow.isNull_or_empty_or_none()) {
+            if (!flow.isNullOrEmptyOrNone()) {
                 put("flow", flow)
             }
         }
@@ -81,8 +77,6 @@ object XrayConfigBuilder {
             put("settings", JSONObject().apply {
                 put("vnext", JSONArray().apply { put(vnextItem) })
             })
-
-            // StreamSettings
             val network = config.params["type"] ?: "tcp"
             val security = config.params["security"] ?: "none"
 
@@ -103,7 +97,8 @@ object XrayConfigBuilder {
                     val tlsSettings = JSONObject().apply {
                         put("serverName", config.params["sni"] ?: config.address)
                         put("fingerprint", config.params["fp"] ?: "chrome")
-                        put("allowInsecure", config.params["allowinsecure"] == "1" || config.params["allowinsecure"] == "true")
+                        val allowInsecure = config.params["allowinsecure"] in setOf("1", "true")
+                        put("allowInsecure", allowInsecure)
                     }
                     put("tlsSettings", tlsSettings)
                 }
@@ -161,8 +156,6 @@ object XrayConfigBuilder {
             put(dnsOutbound)
         }
         root.put("outbounds", outbounds)
-
-        // Routing
         val routing = JSONObject().apply {
             put("domainStrategy", "IPIfNonMatch")
             val rules = JSONArray().apply {
@@ -179,7 +172,7 @@ object XrayConfigBuilder {
         return root.toString(2)
     }
 
-    private fun String?.isNull_or_empty_or_none(): Boolean {
+    private fun String?.isNullOrEmptyOrNone(): Boolean {
         return this.isNullOrBlank() || this.equals("none", ignoreCase = true)
     }
 }
