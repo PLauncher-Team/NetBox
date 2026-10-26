@@ -58,6 +58,8 @@ import com.example.netbox.ui.settings.SettingsScreen
 import com.example.netbox.ui.theme.AppColorScheme
 import com.example.netbox.ui.theme.NetBoxTheme
 import com.example.netbox.xray.AppLogger
+import com.example.netbox.xray.CountryCatalog
+import com.example.netbox.xray.CountryInfo
 import com.example.netbox.xray.PingTester
 import com.example.netbox.xray.ProxyTransport
 import com.example.netbox.xray.SubscriptionFetcher
@@ -103,6 +105,11 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var subscriptionRefreshText by remember { mutableStateOf(settingsStore.subscriptionRefreshMinutes.toString()) }
     var allowedTransports by remember { mutableStateOf(settingsStore.allowedTransports) }
     var activeProxyPool by remember { mutableStateOf<List<VlessConfig>>(emptyList()) }
+    var subscriptionCatalog by remember { mutableStateOf<List<VlessConfig>>(emptyList()) }
+    var countryCatalog by remember { mutableStateOf<List<CountryInfo>>(emptyList()) }
+    var selectedCountryCode by remember { mutableStateOf(settingsStore.selectedCountryCode) }
+    var isCountryChangeInProgress by remember { mutableStateOf(false) }
+    var countryChangeJob by remember { mutableStateOf<Job?>(null) }
     var lastSourceSubscriptionUris by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isHttpPing by remember { mutableStateOf(settingsStore.isHttpPing) }
     var enableDebugLogs by remember { mutableStateOf(settingsStore.enableDebugLogs) }
@@ -120,6 +127,17 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var useSystemTheme by remember { mutableStateOf(settingsStore.useSystemTheme) }
     var customColor by remember { mutableStateOf(Color(settingsStore.customColorArgb)) }
     var showColorPicker by remember { mutableStateOf(false) }
+
+    val countryServerCounts = remember(subscriptionCatalog, countryCatalog, allowedTransports) {
+        subscriptionCatalog.asSequence()
+            .filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
+            .mapNotNull { CountryCatalog.detectCountry(it.remark, countryCatalog)?.code }
+            .groupingBy { it }
+            .eachCount()
+    }
+    val availableCountries = remember(countryCatalog, countryServerCounts) {
+        countryCatalog.filter { countryServerCounts.containsKey(it.code) }
+    }
 
     val vpnState by XrayVpnService.vpnState.collectAsState()
     val connectedServer by XrayVpnService.connectedServer.collectAsState()
@@ -201,6 +219,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     fun requestSubscriptionRefresh() {
         if (isRefreshingSubscription || subscriptionUrl.isBlank()) return
         isRefreshingSubscription = true
+        val requestedCountryCode = selectedCountryCode
 
         coroutineScope.launch(Dispatchers.IO) {
             try {
@@ -223,12 +242,36 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     return@launch
                 }
 
-                val candidates = fetched.configs.filter {
+                val countries = CountryCatalog.load(context)
+                withContext(Dispatchers.Main) {
+                    countryCatalog = countries
+                    subscriptionCatalog = fetched.configs
+                }
+
+                val transportCandidates = fetched.configs.filter {
                     ProxyTransport.allows(it.params["type"], allowedTransports)
                 }
-                if (candidates.isEmpty()) {
+                if (transportCandidates.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         statusMessage = "В подписке нет прокси с разрешёнными транспортами"
+                    }
+                    return@launch
+                }
+
+                val candidates = CountryCatalog.filterByCountry(
+                    transportCandidates,
+                    requestedCountryCode,
+                    countries
+                )
+                if (candidates.isEmpty()) {
+                    val countryName = countries.firstOrNull { it.code == requestedCountryCode }?.displayName
+                        ?: requestedCountryCode
+                    withContext(Dispatchers.Main) {
+                        statusMessage = if (requestedCountryCode == CountryInfo.AUTO_CODE) {
+                            "В подписке нет подходящих прокси"
+                        } else {
+                            "В подписке не найдены серверы для страны $countryName"
+                        }
                     }
                     return@launch
                 }
@@ -262,7 +305,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                 if (healthy.isEmpty()) {
                     withContext(Dispatchers.Main) {
-                        statusMessage = "Обновление подписки: работающие прокси не найдены"
+                        statusMessage = "Для выбранной страны не найдены работающие прокси"
                     }
                     return@launch
                 }
@@ -307,6 +350,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             return
         }
 
+        val requestedCountryCode = selectedCountryCode
         isProcessing = true
         statusMessage = "Загрузка подписки..."
 
@@ -314,6 +358,11 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             try {
                 val fetchResult = SubscriptionFetcher.fetchVlessConfigs(context, subscriptionUrl)
                 coroutineContext.ensureActive()
+                val countries = CountryCatalog.load(context)
+                withContext(Dispatchers.Main) {
+                    countryCatalog = countries
+                    subscriptionCatalog = fetchResult.configs
+                }
 
                 val transportFiltered = fetchResult.configs.filter { config ->
                     ProxyTransport.allows(config.params["type"], allowedTransports)
@@ -331,8 +380,27 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     return@launch
                 }
 
+                val countryFiltered = CountryCatalog.filterByCountry(
+                    transportFiltered,
+                    requestedCountryCode,
+                    countries
+                )
+                if (countryFiltered.isEmpty()) {
+                    val countryName = countries.firstOrNull { it.code == requestedCountryCode }?.displayName
+                        ?: requestedCountryCode
+                    withContext(Dispatchers.Main) {
+                        statusMessage = if (requestedCountryCode == CountryInfo.AUTO_CODE) {
+                            "Нет прокси для подключения"
+                        } else {
+                            "Не найдены серверы для страны $countryName · выберите другую страну"
+                        }
+                        isProcessing = false
+                    }
+                    return@launch
+                }
+
                 withContext(Dispatchers.Main) {
-                    statusMessage = "Проверка прокси 0/${transportFiltered.size}"
+                    statusMessage = "Проверка прокси 0/${countryFiltered.size}"
                 }
 
                 val parallelCount = (parallelPingsText.toIntOrNull() ?: 15).coerceIn(1, 100)
@@ -341,7 +409,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                 val testedConfigs = XrayVpnService.testCandidatesThroughTunnel(
                     context = context,
-                    configs = transportFiltered,
+                    configs = countryFiltered,
                     pingUrl = pingUrl,
                     parallelCount = parallelCount,
                     timeoutMs = timeoutMs,
@@ -402,6 +470,143 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     isProcessing = false
                 }
             }
+        }
+    }
+
+    fun handleCountrySelection(countryCode: String) {
+        if (countryCode == selectedCountryCode || isProcessing || isRefreshingSubscription || isCountryChangeInProgress) return
+
+        val countries = if (countryCatalog.isNotEmpty()) countryCatalog else CountryCatalog.load(context)
+        countryCatalog = countries
+        val countryName = countries.firstOrNull { it.code == countryCode }?.displayName
+            ?: if (countryCode == CountryInfo.AUTO_CODE) "Автоматически" else countryCode
+        val transportCandidates = subscriptionCatalog.filter {
+            ProxyTransport.allows(it.params["type"], allowedTransports)
+        }
+        val candidates = CountryCatalog.filterByCountry(transportCandidates, countryCode, countries)
+
+        if (vpnState != VpnState.CONNECTED) {
+            selectedCountryCode = countryCode
+            settingsStore.selectedCountryCode = countryCode
+            activeProxyPool = CountryCatalog.filterByCountry(activeProxyPool, countryCode, countries)
+            statusMessage = if (countryCode == CountryInfo.AUTO_CODE) {
+                "Выбран автоматический выбор сервера"
+            } else {
+                "Выбрана страна $countryName · применится при подключении"
+            }
+            return
+        }
+
+        if (candidates.isEmpty()) {
+            statusMessage = if (countryCode == CountryInfo.AUTO_CODE) {
+                "Список серверов пуст · обновите подписку"
+            } else {
+                "В подписке не найдены серверы для страны $countryName"
+            }
+            return
+        }
+
+        isCountryChangeInProgress = true
+        statusMessage = "Проверка серверов страны $countryName..."
+        val timeoutSeconds = (pingTimeoutText.toIntOrNull() ?: 3).coerceIn(1, 60)
+        val timeoutMs = timeoutSeconds * 1000
+        countryChangeJob = coroutineScope.launch(Dispatchers.IO) {
+            try {
+                val tested = XrayVpnService.testCandidatesThroughTunnel(
+                    context = context,
+                    configs = candidates,
+                    pingUrl = pingUrl,
+                    parallelCount = (parallelPingsText.toIntOrNull() ?: 15).coerceIn(1, 100),
+                    timeoutMs = timeoutMs,
+                    method = if (isHttpPing) "GET" else "HEAD",
+                    attempts = (pingAttemptsText.toIntOrNull() ?: 2).coerceIn(1, 5)
+                ) { _, _, _ -> }
+                val healthy = tested.filter { it.pingMs >= 0L }.sortedBy { it.pingMs }
+
+                withContext(Dispatchers.Main) {
+                    if (XrayVpnService.vpnState.value != VpnState.CONNECTED) {
+                        statusMessage = "Подключение отключено"
+                    } else if (healthy.isEmpty()) {
+                        statusMessage = "Нет работающих серверов в стране $countryName · выбор не изменён"
+                    } else {
+                        selectedCountryCode = countryCode
+                        settingsStore.selectedCountryCode = countryCode
+                        activeProxyPool = healthy
+                        val best = healthy.first()
+                        val current = XrayVpnService.connectedServer.value
+                        XrayVpnService.updateProxyPool(
+                            context,
+                            listOf(best),
+                            (observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400),
+                            timeoutSeconds,
+                            pingUrl,
+                            if (isHttpPing) "GET" else "HEAD"
+                        )
+                        statusMessage = if (current?.rawUri == best.rawUri) {
+                            "Страна: $countryName · текущий сервер уже лучший"
+                        } else {
+                            "Страна: $countryName · переключение на ${best.remark}"
+                        }
+                        maintenanceToken++
+                    }
+                }
+            } catch (_: CancellationException) {
+                withContext(Dispatchers.Main) {
+                    statusMessage = "Смена страны отменена"
+                }
+            } catch (e: Exception) {
+                AppLogger.e("NetBoxLog-Country", "Could not switch country: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    statusMessage = "Не удалось переключить страну"
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    isCountryChangeInProgress = false
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        countryCatalog = withContext(Dispatchers.IO) { CountryCatalog.load(context) }
+    }
+
+    LaunchedEffect(currentScreen, subscriptionUrl) {
+        if (currentScreen != Screen.HOME) return@LaunchedEffect
+        val requestedUrl = subscriptionUrl.trim()
+        if (requestedUrl.isBlank()) {
+            subscriptionCatalog = emptyList()
+            return@LaunchedEffect
+        }
+
+        try {
+            val fetched = withContext(Dispatchers.IO) {
+                SubscriptionFetcher.fetchVlessConfigs(
+                    context = context,
+                    urlStr = requestedUrl,
+                    throughVpn = XrayVpnService.vpnState.value == VpnState.CONNECTED
+                )
+            }
+            if (requestedUrl != subscriptionUrl.trim()) return@LaunchedEffect
+            val countries = if (countryCatalog.isNotEmpty()) {
+                countryCatalog
+            } else {
+                withContext(Dispatchers.IO) { CountryCatalog.load(context) }
+            }
+            countryCatalog = countries
+            subscriptionCatalog = fetched.configs
+            if (selectedCountryCode != CountryInfo.AUTO_CODE &&
+                fetched.configs.none { config ->
+                    ProxyTransport.allows(config.params["type"], allowedTransports) &&
+                        CountryCatalog.detectCountry(config.remark, countries)?.code == selectedCountryCode
+                }
+            ) {
+                statusMessage = "Сохранённая страна не найдена в подписке · выберите другую или автоматический режим"
+            }
+        } catch (_: CancellationException) {
+            throw
+        } catch (e: Exception) {
+            AppLogger.w("NetBoxLog-Country", "Could not load subscription country list: ${e.message}")
         }
     }
 
@@ -503,7 +708,29 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                             .padding(top = 64.dp)
                     ) { screen ->
                         when (screen) {
-                            Screen.HOME -> HomeScreen(vpnState, connectedServer, activeProxyPool, statusMessage, isProcessing, forceCurrentServerRecovery, pingUrl, onToggleConnection = { if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) stopVpnProcess() else startConnectProcess() }, onForceRemoveCurrentServer = { forceRemoveCurrentServer() })
+                            Screen.HOME -> HomeScreen(
+                                vpnState = vpnState,
+                                connectedServer = connectedServer,
+                                activeProxyPool = activeProxyPool,
+                                statusMessage = statusMessage,
+                                isProcessing = isProcessing,
+                                forceCurrentServerRecovery = forceCurrentServerRecovery,
+                                pingUrl = pingUrl,
+                                availableCountries = availableCountries,
+                                selectedCountryCode = selectedCountryCode,
+                                countryServerCounts = countryServerCounts,
+                                countrySelectionEnabled = subscriptionCatalog.isNotEmpty() &&
+                                    !isProcessing && !isRefreshingSubscription && !isCountryChangeInProgress,
+                                onCountrySelected = { handleCountrySelection(it) },
+                                onToggleConnection = {
+                                    if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
+                                        stopVpnProcess()
+                                    } else {
+                                        startConnectProcess()
+                                    }
+                                },
+                                onForceRemoveCurrentServer = { forceRemoveCurrentServer() }
+                            )
                             Screen.SETTINGS -> SettingsScreen(settingsStore, settingsTab, { settingsTab = it }, subscriptionUrl, { subscriptionUrl = it }, pingUrl, { pingUrl = it }, parallelPingsText, { parallelPingsText = it }, pingTimeoutText, { pingTimeoutText = it }, pingAttemptsText, { pingAttemptsText = it }, observatoryIntervalText, { observatoryIntervalText = it }, subscriptionRefreshText, { subscriptionRefreshText = it }, isHttpPing, { isHttpPing = it }, allowedTransports, { allowedTransports = it }, enableDebugLogs, { enableDebugLogs = it }, themeMode, { themeMode = it }, useSystemTheme, { useSystemTheme = it }, isDynamicSupported, colorSchemeOption, { colorSchemeOption = it }, customColor, { logExportLauncher.launch("netbox-logs.txt") }, { showColorPicker = true })
                         }
                     }
@@ -570,8 +797,30 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
             if (fetched.loadedFromCache && activeProxyPool.isNotEmpty() && (!force || XrayVpnService.vpnState.value == VpnState.CONNECTED)) return false
 
-            val allowedCandidates = fetched.configs.filter {
+            val countries = if (countryCatalog.isNotEmpty()) countryCatalog else CountryCatalog.load(context)
+            countryCatalog = countries
+            subscriptionCatalog = fetched.configs
+            val transportCandidates = fetched.configs.filter {
                 ProxyTransport.allows(it.params["type"], allowedTransports)
+            }
+            if (transportCandidates.isEmpty()) {
+                statusMessage = "В подписке нет прокси с разрешёнными транспортами"
+                return false
+            }
+            val allowedCandidates = CountryCatalog.filterByCountry(
+                transportCandidates,
+                selectedCountryCode,
+                countries
+            )
+            if (allowedCandidates.isEmpty()) {
+                val countryName = countries.firstOrNull { it.code == selectedCountryCode }?.displayName
+                    ?: selectedCountryCode
+                statusMessage = if (selectedCountryCode == CountryInfo.AUTO_CODE) {
+                    "В подписке нет подходящих прокси"
+                } else {
+                    "В подписке не найдены серверы для страны $countryName"
+                }
+                return false
             }
 
             val healthyConfigs = testCandidates(allowedCandidates)
