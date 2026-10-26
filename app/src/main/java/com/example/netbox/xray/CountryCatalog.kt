@@ -55,10 +55,17 @@ object CountryCatalog {
     }
 
     /**
-     * Matches full English/Russian country names at word boundaries. ISO codes
-     * are accepted only as standalone uppercase labels to avoid common false positives.
+     * Matches a country flag emoji first, then full English/Russian country
+     * names at word boundaries. ISO codes are accepted only as standalone
+     * uppercase labels to avoid common false positives.
      */
     fun detectCountry(remark: String, countries: List<CountryInfo>): CountryInfo? {
+        // Check the original string before normalization, which removes emoji.
+        val flagMatch = countries.firstOrNull { country ->
+            remark.contains(country.flag)
+        }
+        if (flagMatch != null) return flagMatch
+
         val normalizedRemark = normalize(remark)
         if (normalizedRemark.isBlank()) return null
 
