@@ -89,4 +89,12 @@ class SettingsStore(context: Context) {
             prefs.edit().putBoolean("enable_debug_logs", value).apply()
             AppLogger.isEnabled = value
         }
+
+    var notificationsEnabled: Boolean
+        get() = prefs.getBoolean("notifications_enabled", true)
+        set(value) = prefs.edit().putBoolean("notifications_enabled", value).apply()
+
+    var notificationPermissionAsked: Boolean
+        get() = prefs.getBoolean("notification_permission_asked", false)
+        set(value) = prefs.edit().putBoolean("notification_permission_asked", value).apply()
 }
