@@ -135,6 +135,7 @@ class XrayVpnService : VpnService() {
             ) {
                 return try {
                     val portMap = service.prepareCandidateProbeRoutes(configs)
+                    val credentials = LocalProxyAuth.credentials(context)
                     PingTester.testCandidatesOnPorts(
                         configs = configs,
                         portByRawUri = portMap,
@@ -144,6 +145,8 @@ class XrayVpnService : VpnService() {
                         parallelCount = parallelCount,
                         attempts = attempts,
                         stopAfterFirstHealthy = stopAfterFirstHealthy,
+                        socksUsername = credentials.username,
+                        socksPassword = credentials.password,
                         onProgress = onProgress
                     )
                 } catch (e: CancellationException) {
