@@ -13,7 +13,9 @@ object XrayConfigBuilder {
         observatoryIntervalSeconds: Int = 30,
         probeTimeoutSeconds: Int = 3,
         probeMethod: String = "HEAD",
-        includeCandidateProbeInbounds: Boolean = false
+        includeCandidateProbeInbounds: Boolean = false,
+        socksUsername: String? = null,
+        socksPassword: String? = null
     ): String {
 
         val configs = (if (includeCandidateProbeInbounds) proxyPool else listOf(proxyPool.firstOrNull() ?: config)).distinctBy { it.rawUri }
@@ -40,14 +42,15 @@ object XrayConfigBuilder {
                 put("protocol", "socks")
                 put("settings", JSONObject().apply {
                     put("udp", true)
-                    put("auth", "noauth")
+                    val hasAuth = !socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()
+                    put("auth", if (hasAuth) "password" else "noauth")
+                    if (hasAuth) {
+                        put("users", JSONArray().put(JSONObject().apply {
+                            put("user", socksUsername)
+                            put("pass", socksPassword)
+                        }))
+                    }
                 })
-            })
-            put(JSONObject().apply {
-                put("tag", "http-in")
-                put("port", 10809)
-                put("listen", "127.0.0.1")
-                put("protocol", "http")
             })
             put(JSONObject().apply {
                 put("tag", "dns-in")
@@ -69,7 +72,14 @@ object XrayConfigBuilder {
                         put("protocol", "socks")
                         put("settings", JSONObject().apply {
                             put("udp", false)
-                            put("auth", "noauth")
+                            val hasAuth = !socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()
+                            put("auth", if (hasAuth) "password" else "noauth")
+                            if (hasAuth) {
+                                put("users", JSONArray().put(JSONObject().apply {
+                                    put("user", socksUsername)
+                                    put("pass", socksPassword)
+                                }))
+                            }
                         })
                     })
                 }
