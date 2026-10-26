@@ -490,7 +490,7 @@ class XrayVpnService : VpnService() {
         _vpnState.value = VpnState.DISCONNECTED
         refreshQuickSettingsTile()
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(1)
-        stopForeground(true)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         instance = null
         stopSelf()
     }
@@ -523,9 +523,11 @@ class XrayVpnService : VpnService() {
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        @Suppress("DEPRECATION")
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, "netbox_vpn_channel")
         } else {
+            // Android 7.x has no channel-aware constructor; minSdk is 24.
             Notification.Builder(this)
         }
         return builder
