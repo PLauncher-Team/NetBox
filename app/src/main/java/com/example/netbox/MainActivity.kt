@@ -106,6 +106,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var allowedTransports by remember { mutableStateOf(settingsStore.allowedTransports) }
     var activeProxyPool by remember { mutableStateOf<List<VlessConfig>>(emptyList()) }
     var subscriptionCatalog by remember { mutableStateOf<List<VlessConfig>>(emptyList()) }
+    var countryCandidatePool by remember { mutableStateOf<List<VlessConfig>>(emptyList()) }
+    var pingDataVersion by remember { mutableStateOf(0) }
     var countryCatalog by remember { mutableStateOf<List<CountryInfo>>(emptyList()) }
     var selectedCountryCode by remember { mutableStateOf(settingsStore.selectedCountryCode) }
     var lastSourceSubscriptionUris by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -126,12 +128,15 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var customColor by remember { mutableStateOf(Color(settingsStore.customColorArgb)) }
     var showColorPicker by remember { mutableStateOf(false) }
 
-    // While connected, show counts from the active candidate pool. When disconnected,
-    // fall back to the current transport-filtered inventory so the selector remains useful.
-    val countryStatsPool = remember(activeProxyPool, subscriptionCatalog, allowedTransports) {
-        activeProxyPool.ifEmpty {
-            subscriptionCatalog.filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
+    // This is the current all-country candidate pool (filtered by allowed transports),
+    // independent of which single country is currently selected for the VPN.
+    LaunchedEffect(subscriptionCatalog, allowedTransports) {
+        countryCandidatePool = subscriptionCatalog.filter {
+            ProxyTransport.allows(it.params["type"], allowedTransports)
         }
+    }
+    val countryStatsPool = remember(countryCandidatePool, allowedTransports) {
+        countryCandidatePool.filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
     }
     val countryServerCounts = remember(countryStatsPool, countryCatalog) {
         countryStatsPool.asSequence()
@@ -139,9 +144,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             .groupingBy { it }
             .eachCount()
     }
-    val availableCountryCodes = remember(subscriptionCatalog, countryCatalog, allowedTransports) {
-        subscriptionCatalog.asSequence()
-            .filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
+    val availableCountryCodes = remember(countryStatsPool, countryCatalog) {
+        countryStatsPool.asSequence()
             .mapNotNull { CountryCatalog.detectCountry(it.remark, countryCatalog)?.code }
             .toSet()
     }
@@ -149,12 +153,9 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         countryCatalog.filter { availableCountryCodes.contains(it.code) }
     }
     // Display the best ping already known for each country; this never triggers new tests.
-    val countryServerMinPings = remember(subscriptionCatalog, activeProxyPool, countryCatalog, allowedTransports) {
+    val countryServerMinPings = remember(countryStatsPool, countryCatalog, pingDataVersion) {
         val configsByUri = linkedMapOf<String, VlessConfig>()
-        subscriptionCatalog
-            .filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
-            .forEach { configsByUri[it.rawUri] = it }
-        activeProxyPool.forEach { configsByUri[it.rawUri] = it }
+        countryStatsPool.forEach { configsByUri[it.rawUri] = it }
 
         configsByUri.values.asSequence()
             .filter { it.pingMs >= 0L }
@@ -342,6 +343,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     val best = healthy.first()
                     val current = XrayVpnService.connectedServer.value
                     activeProxyPool = healthy
+                    pingDataVersion++
                     lastSourceSubscriptionUris = fetched.configs.map { it.rawUri }.toSet()
                     if (current?.rawUri != best.rawUri) {
                         XrayVpnService.updateProxyPool(
@@ -449,6 +451,9 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     }
                 }
                 coroutineContext.ensureActive()
+                withContext(Dispatchers.Main) {
+                    pingDataVersion++
+                }
 
                 val healthyConfigs = testedConfigs.filter {
                     it.pingMs >= 0L
@@ -556,6 +561,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         selectedCountryCode = countryCode
         settingsStore.selectedCountryCode = countryCode
         activeProxyPool = rankedCandidates
+        pingDataVersion++
 
         if (current?.rawUri != best.rawUri) {
             XrayVpnService.updateProxyPool(
@@ -590,6 +596,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         val requestedUrl = subscriptionUrl.trim()
         if (requestedUrl.isBlank()) {
             subscriptionCatalog = emptyList()
+            countryCandidatePool = emptyList()
             return@LaunchedEffect
         }
 
@@ -787,7 +794,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             if (candidates.isEmpty()) return emptyList()
             val timeoutSeconds = (pingTimeoutText.toIntOrNull() ?: 3).coerceIn(1, 60)
             val timeoutMs = timeoutSeconds * 1000
-            return XrayVpnService.testCandidatesThroughTunnel(
+            val tested = XrayVpnService.testCandidatesThroughTunnel(
                 context = context,
                 configs = candidates,
                 pingUrl = pingUrl,
@@ -797,6 +804,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                 attempts = (pingAttemptsText.toIntOrNull() ?: 2).coerceIn(1, 5),
                 stopAfterFirstHealthy = stopAfterFirstHealthy
             ) { _, _, _ -> }
+            pingDataVersion++
+            return tested
                 .filter { it.pingMs >= 0L }
                 .sortedBy { it.pingMs }
         }
@@ -888,8 +897,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                 val currentHealthy = !forcedRecovery && currentProbeMs >= 0L
                 if (currentHealthy) {
                     current.pingMs = currentProbeMs
-                    // Trigger a Compose refresh so per-country minimum pings stay current.
-                    activeProxyPool = activeProxyPool.toList()
+                    pingDataVersion++
                 }
                 if (!currentHealthy) {
                     statusMessage = if (forcedRecovery) {
@@ -915,6 +923,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     }
                     failedCandidates.forEach { candidate ->
                         activeProxyPool = activeProxyPool.filter { it.rawUri != candidate.rawUri }
+                        countryCandidatePool = countryCandidatePool.filter { it.rawUri != candidate.rawUri }
                         AppLogger.w(
                             "NetBoxLog-Recovery",
                             "Removing unreachable candidate ${candidate.remark} (${candidate.address}:${candidate.port})"
