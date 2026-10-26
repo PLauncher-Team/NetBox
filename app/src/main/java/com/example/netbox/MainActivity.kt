@@ -283,6 +283,23 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
         isProcessing = false
     }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted && notificationsEnabled) {
+            statusMessage = "Разрешение на уведомления не выдано"
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !settingsStore.notificationPermissionAsked
+        ) {
+            settingsStore.notificationPermissionAsked = true
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     fun stopVpnProcess() {
         connectJob?.cancel()
         connectJob = null
