@@ -629,6 +629,9 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         }
 
         isCheckingCountryPool = true
+        if (vpnState != VpnState.CONNECTED) {
+            statusMessage = "Проверка серверов подписки..."
+        }
         try {
             val fetched = withContext(Dispatchers.IO) {
                 SubscriptionFetcher.fetchVlessConfigs(
@@ -665,12 +668,23 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             ) {
                 selectedCountryCode = CountryInfo.AUTO_CODE
                 settingsStore.selectedCountryCode = CountryInfo.AUTO_CODE
-                statusMessage = "В выбранной стране нет работающих серверов · выбран автоматический режим"
+                if (vpnState != VpnState.CONNECTED) {
+                    statusMessage = "В выбранной стране нет работающих серверов · выбран автоматический режим"
+                }
+            } else if (vpnState != VpnState.CONNECTED) {
+                statusMessage = if (healthyCountryPool.isEmpty()) {
+                    "Работающие серверы не найдены"
+                } else {
+                    "Проверка завершена · рабочих серверов: ${healthyCountryPool.size}"
+                }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             AppLogger.w("NetBoxLog-Country", "Could not load and test subscription country list: ${e.message}")
+            if (vpnState != VpnState.CONNECTED) {
+                statusMessage = "Не удалось проверить список серверов"
+            }
         } finally {
             isCheckingCountryPool = false
         }
@@ -780,7 +794,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                 connectedServer = connectedServer,
                                 activeProxyPool = activeProxyPool,
                                 statusMessage = statusMessage,
-                                isProcessing = isProcessing || isCheckingCountryPool,
+                                isProcessing = isProcessing,
                                 forceCurrentServerRecovery = forceCurrentServerRecovery,
                                 pingUrl = pingUrl,
                                 availableCountries = availableCountries,
@@ -792,7 +806,9 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                     vpnState != VpnState.CONNECTING,
                                 onCountrySelected = { handleCountrySelection(it) },
                                 onToggleConnection = {
-                                    if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
+                                    if (isCheckingCountryPool) {
+                                        statusMessage = "Сначала завершится проверка списка серверов"
+                                    } else if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
                                         stopVpnProcess()
                                     } else {
                                         startConnectProcess()
