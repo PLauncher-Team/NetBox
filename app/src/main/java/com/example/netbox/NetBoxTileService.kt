@@ -40,7 +40,7 @@ class NetBoxTileService : TileService() {
         // if there is no previously tested pool to start in the background.
         val permissionIntent = VpnService.prepare(this)
         if (permissionIntent != null || pool.isEmpty()) {
-            openAppForSetup(permissionIntent)
+            openAppForSetup()
             return
         }
 
@@ -55,11 +55,12 @@ class NetBoxTileService : TileService() {
         updateTile()
     }
 
-    private fun openAppForSetup(permissionIntent: Intent?) {
-        val launchIntent = permissionIntent ?: Intent(this, MainActivity::class.java).apply {
+    private fun openAppForSetup() {
+        // MainActivity must receive the VPN-consent result via ActivityResultLauncher.
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
             action = MainActivity.ACTION_TILE_TOGGLE
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             val pendingIntent = PendingIntent.getActivity(
                 this,
