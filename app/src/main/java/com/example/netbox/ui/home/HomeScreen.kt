@@ -32,6 +32,7 @@ fun HomeScreen(
     availableCountries: List<CountryInfo>,
     selectedCountryCode: String,
     countryServerCounts: Map<String, Int>,
+    countryServerMinPings: Map<String, Long>,
     countrySelectionEnabled: Boolean,
     onCountrySelected: (String) -> Unit,
     onToggleConnection: () -> Unit,
@@ -201,6 +202,12 @@ fun HomeScreen(
                                         Text(
                                             text = country.englishName + " · " +
                                                 (countryServerCounts[country.code] ?: 0) + " серверов",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = "Мин. пинг: " +
+                                                (countryServerMinPings[country.code]?.let { "$it мс" } ?: "—"),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
