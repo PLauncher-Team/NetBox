@@ -45,7 +45,7 @@ object XrayConfigBuilder {
                     val hasAuth = !socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()
                     put("auth", if (hasAuth) "password" else "noauth")
                     if (hasAuth) {
-                        put("users", JSONArray().put(JSONObject().apply {
+                        put("accounts", JSONArray().put(JSONObject().apply {
                             put("user", socksUsername)
                             put("pass", socksPassword)
                         }))
@@ -75,7 +75,7 @@ object XrayConfigBuilder {
                             val hasAuth = !socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()
                             put("auth", if (hasAuth) "password" else "noauth")
                             if (hasAuth) {
-                                put("users", JSONArray().put(JSONObject().apply {
+                                put("accounts", JSONArray().put(JSONObject().apply {
                                     put("user", socksUsername)
                                     put("pass", socksPassword)
                                 }))
