@@ -603,8 +603,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             ) {
                 statusMessage = "Сохранённая страна не найдена в подписке · выберите другую или автоматический режим"
             }
-        } catch (_: CancellationException) {
-            throw
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AppLogger.w("NetBoxLog-Country", "Could not load subscription country list: ${e.message}")
         }
