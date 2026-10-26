@@ -137,8 +137,10 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             ProxyTransport.allows(it.params["type"], allowedTransports)
         }
     }
-    val countryStatsPool = remember(countryCandidatePool, allowedTransports) {
-        countryCandidatePool.filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
+    // Country availability/counts come from the full loaded subscription, not the
+    // operational pool, which may drop servers after failed health checks.
+    val countryStatsPool = remember(subscriptionCatalog, allowedTransports) {
+        subscriptionCatalog.filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
     }
     val countryServerCounts = remember(countryStatsPool, countryCatalog) {
         countryStatsPool.asSequence()
@@ -547,7 +549,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         countryCatalog = countries
         val countryName = countries.firstOrNull { it.code == countryCode }?.displayName
             ?: if (countryCode == CountryInfo.AUTO_CODE) "Автоматически" else countryCode
-        val candidates = CountryCatalog.filterByCountry(countryStatsPool, countryCode, countries)
+        val candidates = CountryCatalog.filterByCountry(countryCandidatePool, countryCode, countries)
 
         if (vpnState != VpnState.CONNECTED) {
             selectedCountryCode = countryCode
