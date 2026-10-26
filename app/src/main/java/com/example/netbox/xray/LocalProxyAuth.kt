@@ -45,13 +45,13 @@ object LocalProxyAuth {
             val localCredentials = credentials(context)
             Authenticator.setDefault(object : Authenticator() {
                 override fun getPasswordAuthentication(): PasswordAuthentication? {
-                    val isLoopback = requestingHost == "127.0.0.1" ||
-                        requestingHost.equals("localhost", ignoreCase = true) ||
-                        requestingHost == "::1"
-                    if (requestorType == RequestorType.PROXY &&
-                        requestingPort == SOCKS_PORT &&
-                        isLoopback
-                    ) {
+                    val host = requestingHost
+                    val isLoopback = host == "127.0.0.1" ||
+                        host?.equals("localhost", ignoreCase = true) == true ||
+                        host == "::1"
+                    // Android may report SOCKS authentication as either PROXY or SERVER
+                    // depending on the socket implementation. Restrict by local host and port.
+                    if (requestingPort == SOCKS_PORT && isLoopback) {
                         return PasswordAuthentication(
                             localCredentials.username,
                             localCredentials.password.toCharArray()
@@ -67,6 +67,6 @@ object LocalProxyAuth {
     private fun randomHex(byteCount: Int): String {
         val bytes = ByteArray(byteCount)
         secureRandom.nextBytes(bytes)
-        return bytes.joinToString("") { "%02x".format(it) }
+        return bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 }
