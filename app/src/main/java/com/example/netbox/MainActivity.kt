@@ -137,10 +137,9 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             ProxyTransport.allows(it.params["type"], allowedTransports)
         }
     }
-    // Country availability/counts come from the full loaded subscription, not the
-    // operational pool, which may drop servers after failed health checks.
-    val countryStatsPool = remember(subscriptionCatalog, allowedTransports) {
-        subscriptionCatalog.filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
+    // Country counts and ping labels describe only the current working pool.
+    val countryStatsPool = remember(countryCandidatePool, allowedTransports) {
+        countryCandidatePool.filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
     }
     val countryServerCounts = remember(countryStatsPool, countryCatalog) {
         countryStatsPool.asSequence()
@@ -157,18 +156,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         countryCatalog.filter { availableCountryCodes.contains(it.code) }
     }
     // Display the best ping already known for each country; this never triggers new tests.
-    val countryServerMinPings = remember(
-        countryStatsPool, countryCandidatePool, activeProxyPool, countryCatalog, pingDataVersion
-    ) {
-        val configsByUri = linkedMapOf<String, VlessConfig>()
-        (countryStatsPool + countryCandidatePool + activeProxyPool).forEach { config ->
-            val existing = configsByUri[config.rawUri]
-            if (existing == null || config.pingMs >= 0L) {
-                configsByUri[config.rawUri] = config
-            }
-        }
-
-        configsByUri.values.asSequence()
+    val countryServerMinPings = remember(countryStatsPool, countryCatalog, pingDataVersion) {
+        countryStatsPool.asSequence()
             .filter { it.pingMs >= 0L }
             .mapNotNull { config ->
                 CountryCatalog.detectCountry(config.remark, countryCatalog)?.code?.let { code ->
@@ -481,16 +470,14 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     }
                 }
                 coroutineContext.ensureActive()
-                // Keep the complete transport-filtered subscription pool so a country
-                // remains visible even when its servers fail ping checks. Successful ping
-                // values are retained on each config and used only for min-ping/ranking.
-                withContext(Dispatchers.Main) {
-                    countryCandidatePool = testedConfigs
-                    pingDataVersion++
-                }
-
                 val healthyAllCountryConfigs = testedConfigs.filter {
                     it.pingMs >= 0L
+                }
+                // Keep only healthy servers in the cross-country working pool. Country
+                // counts and minimum pings are both derived from this same pool.
+                withContext(Dispatchers.Main) {
+                    countryCandidatePool = healthyAllCountryConfigs
+                    pingDataVersion++
                 }
                 val healthyConfigs = CountryCatalog.filterByCountry(
                     healthyAllCountryConfigs,
