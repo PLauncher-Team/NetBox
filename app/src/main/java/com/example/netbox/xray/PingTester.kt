@@ -461,7 +461,12 @@ object PingTester {
                     config.pingMs = if (port == null) {
                         -1L
                     } else {
-                        testActiveProxyWithRetry(pingUrl, effectiveTimeout, httpMethod, port, attempts = attempts)
+                        testActiveProxyWithRetry(
+                            pingUrl, effectiveTimeout, httpMethod, port,
+                            attempts = attempts,
+                            socksUsername = socksUsername,
+                            socksPassword = socksPassword
+                        )
                     }
 
                     synchronized(this@PingTester) {
