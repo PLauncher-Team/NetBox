@@ -157,9 +157,16 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         countryCatalog.filter { availableCountryCodes.contains(it.code) }
     }
     // Display the best ping already known for each country; this never triggers new tests.
-    val countryServerMinPings = remember(countryStatsPool, countryCatalog, pingDataVersion) {
+    val countryServerMinPings = remember(
+        countryStatsPool, countryCandidatePool, activeProxyPool, countryCatalog, pingDataVersion
+    ) {
         val configsByUri = linkedMapOf<String, VlessConfig>()
-        countryStatsPool.forEach { configsByUri[it.rawUri] = it }
+        (countryStatsPool + countryCandidatePool + activeProxyPool).forEach { config ->
+            val existing = configsByUri[config.rawUri]
+            if (existing == null || config.pingMs >= 0L) {
+                configsByUri[config.rawUri] = config
+            }
+        }
 
         configsByUri.values.asSequence()
             .filter { it.pingMs >= 0L }
