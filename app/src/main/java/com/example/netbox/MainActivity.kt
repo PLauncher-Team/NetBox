@@ -109,7 +109,9 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var countryCandidatePool by remember { mutableStateOf<List<VlessConfig>>(emptyList()) }
     var pingDataVersion by remember { mutableStateOf(0) }
     var countryCatalog by remember { mutableStateOf<List<CountryInfo>>(emptyList()) }
-    var selectedCountryCode by remember { mutableStateOf(settingsStore.selectedCountryCode) }
+    var selectedCountryCode by remember {
+        mutableStateOf(settingsStore.selectedCountryCode.takeIf { it.isNotBlank() } ?: CountryInfo.AUTO_CODE)
+    }
     var lastSourceSubscriptionUris by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isHttpPing by remember { mutableStateOf(settingsStore.isHttpPing) }
     var enableDebugLogs by remember { mutableStateOf(settingsStore.enableDebugLogs) }
@@ -170,6 +172,16 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
     val vpnState by XrayVpnService.vpnState.collectAsState()
     val connectedServer by XrayVpnService.connectedServer.collectAsState()
+
+    fun preserveKnownPings(configs: List<VlessConfig>): List<VlessConfig> {
+        val knownPings = (countryCandidatePool + activeProxyPool +
+            listOfNotNull(XrayVpnService.connectedServer.value))
+            .filter { it.pingMs >= 0L }
+            .associate { it.rawUri to it.pingMs }
+        return configs.onEach { config ->
+            knownPings[config.rawUri]?.let { config.pingMs = it }
+        }
+    }
 
     BackHandler(enabled = currentScreen == Screen.SETTINGS) {
         currentScreen = Screen.HOME
@@ -272,12 +284,13 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                 }
 
                 val countries = CountryCatalog.load(context)
-                val transportCandidates = fetched.configs.filter {
+                val refreshedConfigs = preserveKnownPings(fetched.configs)
+                val transportCandidates = refreshedConfigs.filter {
                     ProxyTransport.allows(it.params["type"], allowedTransports)
                 }
                 withContext(Dispatchers.Main) {
                     countryCatalog = countries
-                    subscriptionCatalog = fetched.configs
+                    subscriptionCatalog = refreshedConfigs
                     countryCandidatePool = transportCandidates
                 }
                 if (transportCandidates.isEmpty()) {
@@ -396,12 +409,13 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                 val fetchResult = SubscriptionFetcher.fetchVlessConfigs(context, subscriptionUrl)
                 coroutineContext.ensureActive()
                 val countries = CountryCatalog.load(context)
-                val transportFiltered = fetchResult.configs.filter { config ->
+                val refreshedConfigs = preserveKnownPings(fetchResult.configs)
+                val transportFiltered = refreshedConfigs.filter { config ->
                     ProxyTransport.allows(config.params["type"], allowedTransports)
                 }
                 withContext(Dispatchers.Main) {
                     countryCatalog = countries
-                    subscriptionCatalog = fetchResult.configs
+                    subscriptionCatalog = refreshedConfigs
                     countryCandidatePool = transportFiltered
                 }
 
@@ -630,13 +644,15 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             } else {
                 withContext(Dispatchers.IO) { CountryCatalog.load(context) }
             }
-            countryCatalog = countries
-            subscriptionCatalog = fetched.configs
-            countryCandidatePool = fetched.configs.filter {
+            val refreshedConfigs = preserveKnownPings(fetched.configs)
+            val refreshedCountryPool = refreshedConfigs.filter {
                 ProxyTransport.allows(it.params["type"], allowedTransports)
             }
+            countryCatalog = countries
+            subscriptionCatalog = refreshedConfigs
+            countryCandidatePool = refreshedCountryPool
             if (selectedCountryCode != CountryInfo.AUTO_CODE &&
-                countryCandidatePool.none { config ->
+                refreshedCountryPool.none { config ->
                     CountryCatalog.detectCountry(config.remark, countries)?.code == selectedCountryCode
                 }
             ) {
@@ -843,9 +859,10 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             if (fetched.loadedFromCache && activeProxyPool.isNotEmpty() && (!force || XrayVpnService.vpnState.value == VpnState.CONNECTED)) return false
 
             val countries = if (countryCatalog.isNotEmpty()) countryCatalog else CountryCatalog.load(context)
+            val refreshedConfigs = preserveKnownPings(fetched.configs)
             countryCatalog = countries
-            subscriptionCatalog = fetched.configs
-            val transportCandidates = fetched.configs.filter {
+            subscriptionCatalog = refreshedConfigs
+            val transportCandidates = refreshedConfigs.filter {
                 ProxyTransport.allows(it.params["type"], allowedTransports)
             }
             countryCandidatePool = transportCandidates
