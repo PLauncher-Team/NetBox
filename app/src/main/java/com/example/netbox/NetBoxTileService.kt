@@ -7,7 +7,9 @@ import android.net.VpnService
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import com.example.netbox.xray.CountryCatalog
 import com.example.netbox.xray.ProxyCacheStore
+import com.example.netbox.xray.ProxyTransport
 import com.example.netbox.xray.VpnState
 import com.example.netbox.xray.XrayVpnService
 
@@ -28,13 +30,27 @@ class NetBoxTileService : TileService() {
         }
 
         val settings = SettingsStore(this)
-        val cached = ProxyCacheStore.load(this)
-        val pool = cached
-            ?.takeIf { it.subscriptionUrl == settings.subscriptionUrl }
+        val countries = CountryCatalog.load(this)
+        val cached = ProxyCacheStore.loadFresh(
+            context = this,
+            subscriptionUrl = settings.subscriptionUrl,
+            refreshIntervalMinutes = settings.subscriptionRefreshMinutes
+        )
+        val transportPool = cached
             ?.configs
-            ?.filter { it.pingMs >= 0L }
-            ?.sortedBy { it.pingMs }
+            ?.filter { config ->
+                config.pingMs >= 0L &&
+                    ProxyTransport.allows(config.params["type"], settings.allowedTransports)
+            }
             .orEmpty()
+        // Keep the user's chosen country when starting from the system tile.
+        // If the fresh cache has no working server in that country, route to the
+        // normal connect flow rather than silently connecting to a different country.
+        val pool = CountryCatalog.filterByCountry(
+            transportPool,
+            settings.selectedCountryCode,
+            countries
+        ).sortedBy { it.pingMs }
 
         // The first VPN consent must be shown by Android. Also fall back to the UI
         // if there is no previously tested pool to start in the background.
