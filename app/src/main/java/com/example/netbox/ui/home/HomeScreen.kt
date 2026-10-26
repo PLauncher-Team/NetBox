@@ -19,6 +19,18 @@ import com.example.netbox.xray.CountryInfo
 import com.example.netbox.xray.VlessConfig
 import com.example.netbox.xray.VpnState
 
+private fun serverCountLabel(count: Int): String {
+    val lastTwoDigits = count % 100
+    val lastDigit = count % 10
+    val noun = when {
+        lastTwoDigits in 11..14 -> "серверов"
+        lastDigit == 1 -> "сервер"
+        lastDigit in 2..4 -> "сервера"
+        else -> "серверов"
+    }
+    return "$count $noun в пуле"
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
@@ -201,7 +213,7 @@ fun HomeScreen(
                                         Text(country.russianName)
                                         Text(
                                             text = country.englishName + " · " +
-                                                (countryServerCounts[country.code] ?: 0) + " серверов",
+                                                serverCountLabel(countryServerCounts[country.code] ?: 0),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
