@@ -212,8 +212,12 @@ fun HomeScreen(
                                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                         Text(country.russianName)
                                         Text(
-                                            text = country.englishName + " · " +
-                                                serverCountLabel(countryServerCounts[country.code] ?: 0),
+                                            text = if (isConnected) {
+                                                country.englishName + " · " +
+                                                    serverCountLabel(countryServerCounts[country.code] ?: 0)
+                                            } else {
+                                                country.englishName
+                                            },
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
