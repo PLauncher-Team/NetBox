@@ -1,6 +1,8 @@
 package com.example.netbox
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -10,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -42,6 +45,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -60,6 +64,7 @@ import com.example.netbox.ui.theme.NetBoxTheme
 import com.example.netbox.xray.AppLogger
 import com.example.netbox.xray.CountryCatalog
 import com.example.netbox.xray.CountryInfo
+import com.example.netbox.xray.LocalProxyAuth
 import com.example.netbox.xray.PingTester
 import com.example.netbox.xray.ProxyTransport
 import com.example.netbox.xray.SubscriptionFetcher
@@ -76,21 +81,36 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private lateinit var settingsStore: SettingsStore
+    private var tileToggleRequestCounter by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsStore = SettingsStore(this)
+        LocalProxyAuth.installUrlAuthenticator(this)
         AppLogger.isEnabled = settingsStore.enableDebugLogs
+        tileToggleRequestCounter = if (intent?.action == ACTION_TILE_TOGGLE) 1 else 0
         enableEdgeToEdge()
         setContent {
-            NetBoxApp(settingsStore)
+            NetBoxApp(settingsStore, tileToggleRequestCounter)
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == ACTION_TILE_TOGGLE) {
+            tileToggleRequestCounter++
+        }
+    }
+
+    companion object {
+        const val ACTION_TILE_TOGGLE = "com.example.netbox.action.TILE_TOGGLE"
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun NetBoxApp(settingsStore: SettingsStore) {
+fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -118,6 +138,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var lastSourceSubscriptionUris by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isHttpPing by remember { mutableStateOf(settingsStore.isHttpPing) }
     var enableDebugLogs by remember { mutableStateOf(settingsStore.enableDebugLogs) }
+    var notificationsEnabled by remember { mutableStateOf(settingsStore.notificationsEnabled) }
 
     var themeMode by remember {
         mutableStateOf(
