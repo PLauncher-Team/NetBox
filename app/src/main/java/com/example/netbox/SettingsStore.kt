@@ -11,6 +11,10 @@ class SettingsStore(context: Context) {
         get() = prefs.getString("sub_url", "") ?: ""
         set(value) = prefs.edit().putString("sub_url", value).apply()
 
+    var selectedCountryCode: String
+        get() = prefs.getString("selected_country_code", "auto") ?: "auto"
+        set(value) = prefs.edit().putString("selected_country_code", value).apply()
+
     var pingUrl: String
         get() = prefs.getString("ping_url", null).let { saved ->
             val normalized = saved?.trim()?.trimEnd('/')
