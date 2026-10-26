@@ -126,15 +126,45 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var customColor by remember { mutableStateOf(Color(settingsStore.customColorArgb)) }
     var showColorPicker by remember { mutableStateOf(false) }
 
-    val countryServerCounts = remember(subscriptionCatalog, countryCatalog, allowedTransports) {
-        subscriptionCatalog.asSequence()
-            .filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
+    // While connected, show counts from the active candidate pool. When disconnected,
+    // fall back to the current transport-filtered inventory so the selector remains useful.
+    val countryStatsPool = remember(activeProxyPool, subscriptionCatalog, allowedTransports) {
+        activeProxyPool.ifEmpty {
+            subscriptionCatalog.filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
+        }
+    }
+    val countryServerCounts = remember(countryStatsPool, countryCatalog) {
+        countryStatsPool.asSequence()
             .mapNotNull { CountryCatalog.detectCountry(it.remark, countryCatalog)?.code }
             .groupingBy { it }
             .eachCount()
     }
-    val availableCountries = remember(countryCatalog, countryServerCounts) {
-        countryCatalog.filter { countryServerCounts.containsKey(it.code) }
+    val availableCountryCodes = remember(subscriptionCatalog, countryCatalog, allowedTransports) {
+        subscriptionCatalog.asSequence()
+            .filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
+            .mapNotNull { CountryCatalog.detectCountry(it.remark, countryCatalog)?.code }
+            .toSet()
+    }
+    val availableCountries = remember(countryCatalog, availableCountryCodes) {
+        countryCatalog.filter { availableCountryCodes.contains(it.code) }
+    }
+    // Display the best ping already known for each country; this never triggers new tests.
+    val countryServerMinPings = remember(subscriptionCatalog, activeProxyPool, countryCatalog, allowedTransports) {
+        val configsByUri = linkedMapOf<String, VlessConfig>()
+        subscriptionCatalog
+            .filter { ProxyTransport.allows(it.params["type"], allowedTransports) }
+            .forEach { configsByUri[it.rawUri] = it }
+        activeProxyPool.forEach { configsByUri[it.rawUri] = it }
+
+        configsByUri.values.asSequence()
+            .filter { it.pingMs >= 0L }
+            .mapNotNull { config ->
+                CountryCatalog.detectCountry(config.remark, countryCatalog)?.code?.let { code ->
+                    code to config.pingMs
+                }
+            }
+            .groupBy({ it.first }, { it.second })
+            .mapValues { (_, pings) -> pings.minOrNull()!! }
     }
 
     val vpnState by XrayVpnService.vpnState.collectAsState()
@@ -703,6 +733,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                 availableCountries = availableCountries,
                                 selectedCountryCode = selectedCountryCode,
                                 countryServerCounts = countryServerCounts,
+                                countryServerMinPings = countryServerMinPings,
                                 countrySelectionEnabled = subscriptionCatalog.isNotEmpty() &&
                                     !isProcessing && !isRefreshingSubscription &&
                                     vpnState != VpnState.CONNECTING,
@@ -855,7 +886,11 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     )
                 }
                 val currentHealthy = !forcedRecovery && currentProbeMs >= 0L
-                if (currentHealthy) current.pingMs = currentProbeMs
+                if (currentHealthy) {
+                    current.pingMs = currentProbeMs
+                    // Trigger a Compose refresh so per-country minimum pings stay current.
+                    activeProxyPool = activeProxyPool.toList()
+                }
                 if (!currentHealthy) {
                     statusMessage = if (forcedRecovery) {
                         "Текущий сервер исключён · поиск замены"
