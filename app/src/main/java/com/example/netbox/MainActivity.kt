@@ -472,16 +472,17 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     }
                 }
                 coroutineContext.ensureActive()
-                val healthyAllCountryConfigs = testedConfigs.filter {
-                    it.pingMs >= 0L
-                }
+                // Keep the complete transport-filtered subscription pool so a country
+                // remains visible even when its servers fail ping checks. Successful ping
+                // values are retained on each config and used only for min-ping/ranking.
                 withContext(Dispatchers.Main) {
-                    // Keep every healthy server from every country for country counts
-                    // and min-ping display. The active VPN pool below stays country-specific.
-                    countryCandidatePool = healthyAllCountryConfigs
+                    countryCandidatePool = testedConfigs
                     pingDataVersion++
                 }
 
+                val healthyAllCountryConfigs = testedConfigs.filter {
+                    it.pingMs >= 0L
+                }
                 val healthyConfigs = CountryCatalog.filterByCountry(
                     healthyAllCountryConfigs,
                     requestedCountryCode,
