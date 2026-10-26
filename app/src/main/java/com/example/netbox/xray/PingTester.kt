@@ -28,7 +28,9 @@ object PingTester {
         pingUrl: String,
         timeoutMs: Int,
         method: String = "HEAD",
-        socksPort: Int = 10808
+        socksPort: Int = 10808,
+        socksUsername: String? = null,
+        socksPassword: String? = null
     ): Long = withContext(Dispatchers.IO) {
         val effectiveTimeout = timeoutMs.coerceAtLeast(1000)
         val httpMethod = if (method.equals("HEAD", ignoreCase = true)) "HEAD" else "GET"
@@ -69,13 +71,39 @@ object PingTester {
                     val socksInput = proxySocket.getInputStream()
                     val socksOutput = proxySocket.getOutputStream()
 
-                    socksOutput.write(byteArrayOf(0x05, 0x01, 0x00))
+                    val hasCredentials = !socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()
+                    socksOutput.write(
+                        if (hasCredentials) byteArrayOf(0x05, 0x01, 0x02)
+                        else byteArrayOf(0x05, 0x01, 0x00)
+                    )
                     socksOutput.flush()
                     val greeting = readExactly(socksInput, 2)
-                    if ((greeting[0].toInt() and 0xff) != 0x05 ||
-                        (greeting[1].toInt() and 0xff) != 0x00
-                    ) {
-                        throw IllegalStateException("SOCKS5 no-auth negotiation failed")
+                    if ((greeting[0].toInt() and 0xff) != 0x05) {
+                        throw IllegalStateException("Invalid SOCKS5 greeting")
+                    }
+                    val authMethod = greeting[1].toInt() and 0xff
+                    if (hasCredentials && authMethod == 0x02) {
+                        val usernameBytes = socksUsername!!.toByteArray(Charsets.UTF_8)
+                        val passwordBytes = socksPassword!!.toByteArray(Charsets.UTF_8)
+                        require(usernameBytes.size in 1..255 && passwordBytes.size in 1..255) {
+                            "SOCKS5 credentials have invalid length"
+                        }
+                        val authRequest = ByteArray(3 + usernameBytes.size + passwordBytes.size)
+                        authRequest[0] = 0x01
+                        authRequest[1] = usernameBytes.size.toByte()
+                        System.arraycopy(usernameBytes, 0, authRequest, 2, usernameBytes.size)
+                        authRequest[2 + usernameBytes.size] = passwordBytes.size.toByte()
+                        System.arraycopy(passwordBytes, 0, authRequest, 3 + usernameBytes.size, passwordBytes.size)
+                        socksOutput.write(authRequest)
+                        socksOutput.flush()
+                        val authResponse = readExactly(socksInput, 2)
+                        if ((authResponse[0].toInt() and 0xff) != 0x01 ||
+                            (authResponse[1].toInt() and 0xff) != 0x00
+                        ) {
+                            throw IllegalStateException("SOCKS5 username/password authentication failed")
+                        }
+                    } else if (authMethod != 0x00 || hasCredentials) {
+                        throw IllegalStateException("SOCKS5 server selected unsupported authentication method")
                     }
 
                     val request = ByteArray(7 + hostBytes.size)
@@ -189,11 +217,15 @@ object PingTester {
         timeoutMs: Int,
         method: String = "HEAD",
         socksPort: Int = 10808,
-        attempts: Int = 2
+        attempts: Int = 2,
+        socksUsername: String? = null,
+        socksPassword: String? = null
     ): Long {
         val maxAttempts = attempts.coerceIn(1, 3)
         for (attempt in 1..maxAttempts) {
-            val result = testActiveProxy(pingUrl, timeoutMs, method, socksPort)
+            val result = testActiveProxy(
+                pingUrl, timeoutMs, method, socksPort, socksUsername, socksPassword
+            )
             if (result >= 0L) return result
             if (attempt < maxAttempts) {
                 AppLogger.d(TAG, "Probe failed; retrying (${attempt + 1}/$maxAttempts)")
@@ -302,13 +334,16 @@ object PingTester {
         val configFile = File(context.applicationContext.filesDir, "xray_candidate_probe.json")
         var started = false
         try {
+            val credentials = LocalProxyAuth.credentials(context)
             val jsonConfig = XrayConfigBuilder.buildJsonConfig(
                 config = configs.first(),
                 proxyPool = configs,
                 probeUrl = pingUrl,
                 probeTimeoutSeconds = timeoutMs.coerceAtLeast(1000) / 1000,
                 probeMethod = method,
-                includeCandidateProbeInbounds = true
+                includeCandidateProbeInbounds = true,
+                socksUsername = credentials.username,
+                socksPassword = credentials.password
             )
             configFile.writeText(jsonConfig)
 
@@ -337,6 +372,8 @@ object PingTester {
                 method = method,
                 parallelCount = parallelCount,
                 attempts = attempts,
+                socksUsername = credentials.username,
+                socksPassword = credentials.password,
                 onProgress = onProgress
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -370,6 +407,8 @@ object PingTester {
         parallelCount: Int,
         attempts: Int = 2,
         stopAfterFirstHealthy: Boolean = false,
+        socksUsername: String? = null,
+        socksPassword: String? = null,
         onProgress: (completed: Int, total: Int, bestConfig: VlessConfig?) -> Unit
     ): List<VlessConfig> = withContext(Dispatchers.IO) {
         if (configs.isEmpty()) return@withContext emptyList()
@@ -388,7 +427,12 @@ object PingTester {
                 config.pingMs = if (port == null) {
                     -1L
                 } else {
-                    testActiveProxyWithRetry(pingUrl, effectiveTimeout, httpMethod, port, attempts = attempts)
+                    testActiveProxyWithRetry(
+                        pingUrl, effectiveTimeout, httpMethod, port,
+                        attempts = attempts,
+                        socksUsername = socksUsername,
+                        socksPassword = socksPassword
+                    )
                 }
                 tested += config
                 completedCount++
