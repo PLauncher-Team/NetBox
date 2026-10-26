@@ -1,0 +1,14 @@
+Country names dataset attribution
+
+The app/src/main/assets/countries.json file is a compact derived dataset containing country names in English and Russian and ISO 3166 codes.
+
+Source project: stefangabos/world_countries
+Source files:
+- https://github.com/stefangabos/world_countries/blob/master/data/countries/en/world.json
+- https://github.com/stefangabos/world_countries/blob/master/data/countries/ru/world.json
+- https://github.com/stefangabos/world_countries/blob/master/LICENSE.txt
+
+The upstream project states that its country data is sourced from Wikipedia's ISO 3166-1 pages and is licensed under the Creative Commons Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0). This derived country-name dataset is distributed under CC BY-SA 4.0 as well.
+
+License: https://creativecommons.org/licenses/by-sa/4.0/
+Dataset source checked: 2026-10-26
