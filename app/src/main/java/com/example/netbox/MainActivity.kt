@@ -806,10 +806,10 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                     vpnState != VpnState.CONNECTING,
                                 onCountrySelected = { handleCountrySelection(it) },
                                 onToggleConnection = {
-                                    if (isCheckingCountryPool) {
-                                        statusMessage = "Сначала завершится проверка списка серверов"
-                                    } else if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
+                                    if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
                                         stopVpnProcess()
+                                    } else if (isCheckingCountryPool) {
+                                        statusMessage = "Сначала завершится проверка списка серверов"
                                     } else {
                                         startConnectProcess()
                                     }
