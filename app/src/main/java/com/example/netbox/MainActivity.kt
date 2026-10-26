@@ -866,7 +866,9 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             }
             if (fetched.configs.isEmpty()) return false
 
-            if (fetched.loadedFromCache && activeProxyPool.isNotEmpty() && (!force || XrayVpnService.vpnState.value == VpnState.CONNECTED)) return false
+            if (fetched.loadedFromCache && activeProxyPool.isNotEmpty() &&
+                (!force || XrayVpnService.vpnState.value == VpnState.CONNECTED)
+            ) return false
 
             val countries = if (countryCatalog.isNotEmpty()) countryCatalog else CountryCatalog.load(context)
             val refreshedConfigs = preserveKnownPings(fetched.configs)
@@ -875,31 +877,32 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             val transportCandidates = refreshedConfigs.filter {
                 ProxyTransport.allows(it.params["type"], allowedTransports)
             }
-            countryCandidatePool = transportCandidates
             if (transportCandidates.isEmpty()) {
+                countryCandidatePool = emptyList()
+                pingDataVersion++
                 statusMessage = "В подписке нет прокси с разрешёнными транспортами"
                 return false
             }
-            val allowedCandidates = CountryCatalog.filterByCountry(
-                transportCandidates,
-                selectedCountryCode,
-                countries
-            )
-            if (allowedCandidates.isEmpty()) {
-                val countryName = countries.firstOrNull { it.code == selectedCountryCode }?.displayName
-                    ?: selectedCountryCode
-                statusMessage = if (selectedCountryCode == CountryInfo.AUTO_CODE) {
-                    "В подписке нет подходящих прокси"
-                } else {
-                    "В подписке не найдены серверы для страны $countryName"
-                }
+
+            // Recheck every allowed country, not just the currently selected one. This
+            // prevents untested countries from reappearing without ping values after refresh.
+            val healthyAllCountryConfigs = testCandidates(transportCandidates)
+            countryCandidatePool = healthyAllCountryConfigs
+            if (healthyAllCountryConfigs.isEmpty()) {
+                statusMessage = "Обновление подписки: работающие прокси не найдены"
                 return false
             }
 
-            val healthyConfigs = testCandidates(allowedCandidates)
-            val testedUris = allowedCandidates.map { it.rawUri }.toSet()
-            countryCandidatePool = countryCandidatePool.filter { candidate ->
-                candidate.rawUri !in testedUris || candidate.pingMs >= 0L
+            var healthyConfigs = CountryCatalog.filterByCountry(
+                healthyAllCountryConfigs,
+                selectedCountryCode,
+                countries
+            )
+            if (healthyConfigs.isEmpty() && selectedCountryCode != CountryInfo.AUTO_CODE) {
+                selectedCountryCode = CountryInfo.AUTO_CODE
+                settingsStore.selectedCountryCode = CountryInfo.AUTO_CODE
+                healthyConfigs = healthyAllCountryConfigs
+                statusMessage = "В выбранной стране больше нет рабочих серверов · включён автоматический выбор"
             }
             if (healthyConfigs.isEmpty()) {
                 statusMessage = "Обновление подписки: работающие прокси не найдены"
