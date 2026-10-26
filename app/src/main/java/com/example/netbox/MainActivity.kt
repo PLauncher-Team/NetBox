@@ -66,6 +66,7 @@ import com.example.netbox.xray.CountryCatalog
 import com.example.netbox.xray.CountryInfo
 import com.example.netbox.xray.LocalProxyAuth
 import com.example.netbox.xray.PingTester
+import com.example.netbox.xray.ProxyCacheStore
 import com.example.netbox.xray.ProxyTransport
 import com.example.netbox.xray.SubscriptionFetcher
 import com.example.netbox.xray.VlessConfig
@@ -448,6 +449,59 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
 
         connectJob = coroutineScope.launch(Dispatchers.IO) {
             try {
+                val cached = ProxyCacheStore.loadFresh(
+                    context = context,
+                    subscriptionUrl = subscriptionUrl,
+                    refreshIntervalMinutes = settingsStore.subscriptionRefreshMinutes
+                )
+                if (cached != null) {
+                    val countries = CountryCatalog.load(context)
+                    val transportFiltered = cached.configs.filter { config ->
+                        ProxyTransport.allows(config.params["type"], allowedTransports)
+                    }
+                    var cachedCandidates = CountryCatalog.filterByCountry(
+                        transportFiltered,
+                        requestedCountryCode,
+                        countries
+                    )
+                    if (cachedCandidates.isEmpty() && requestedCountryCode != CountryInfo.AUTO_CODE) {
+                        cachedCandidates = transportFiltered
+                        withContext(Dispatchers.Main) {
+                            selectedCountryCode = CountryInfo.AUTO_CODE
+                            settingsStore.selectedCountryCode = CountryInfo.AUTO_CODE
+                        }
+                    }
+                    if (cachedCandidates.isNotEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            countryCatalog = countries
+                            subscriptionCatalog = cached.configs
+                            countryCandidatePool = transportFiltered
+                            lastSourceSubscriptionUris = cached.configs.map { it.rawUri }.toSet()
+                            pingDataVersion++
+                            pendingProxyPool = cachedCandidates.sortedBy { it.pingMs }
+                            statusMessage = "Используем кеш проверенных серверов · ${cachedCandidates.size}"
+                            val permissionIntent = VpnService.prepare(context)
+                            if (permissionIntent != null) {
+                                vpnPermissionLauncher.launch(permissionIntent)
+                            } else {
+                                activeProxyPool = pendingProxyPool
+                                XrayVpnService.startVpn(
+                                    context,
+                                    pendingProxyPool,
+                                    settingsStore.observatoryIntervalSeconds,
+                                    settingsStore.pingTimeoutSeconds,
+                                    settingsStore.pingUrl,
+                                    if (settingsStore.isHttpPing) "GET" else "HEAD"
+                                )
+                                statusMessage = "Подключение из кеша · ${pendingProxyPool.size} прокси"
+                                isProcessing = false
+                                maintenanceToken++
+                            }
+                        }
+                        return@launch
+                    }
+                }
+
                 val fetchResult = SubscriptionFetcher.fetchVlessConfigs(context, subscriptionUrl)
                 coroutineContext.ensureActive()
                 val countries = CountryCatalog.load(context)
@@ -496,6 +550,9 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
                     }
                 }
                 coroutineContext.ensureActive()
+                // Persist every probe result, including failures, so a fresh cache can
+                // be reused without repeating the entire test batch.
+                ProxyCacheStore.save(context, subscriptionUrl, testedConfigs)
                 val healthyAllCountryConfigs = testedConfigs.filter {
                     it.pingMs >= 0L
                 }
