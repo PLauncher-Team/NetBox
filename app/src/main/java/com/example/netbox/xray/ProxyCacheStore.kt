@@ -17,6 +17,7 @@ object ProxyCacheStore {
     private const val KEY_CONFIGS = "tested_configs"
 
     fun save(context: Context, subscriptionUrl: String, configs: List<VlessConfig>) {
+        if (subscriptionUrl.isBlank() || configs.isEmpty()) return
         val unique = configs.distinctBy { it.rawUri }
         val array = JSONArray()
         unique.forEach { config ->
