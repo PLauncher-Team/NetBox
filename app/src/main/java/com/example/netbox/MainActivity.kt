@@ -566,6 +566,22 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
         }
     }
 
+    fun toggleConnectionFromQuickSettings() {
+        if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
+            stopVpnProcess()
+        } else if (isCheckingCountryPool) {
+            statusMessage = "Сначала завершится проверка списка серверов"
+        } else {
+            startConnectProcess()
+        }
+    }
+
+    LaunchedEffect(tileToggleRequestCounter) {
+        if (tileToggleRequestCounter > 0) {
+            toggleConnectionFromQuickSettings()
+        }
+    }
+
     fun handleCountrySelection(countryCode: String) {
         if (countryCode == selectedCountryCode || isProcessing || isRefreshingSubscription || vpnState == VpnState.CONNECTING) return
 
@@ -764,18 +780,20 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
                                     !isProcessing && !isCheckingCountryPool && !isRefreshingSubscription &&
                                     vpnState != VpnState.CONNECTING,
                                 onCountrySelected = { handleCountrySelection(it) },
-                                onToggleConnection = {
-                                    if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
-                                        stopVpnProcess()
-                                    } else if (isCheckingCountryPool) {
-                                        statusMessage = "Сначала завершится проверка списка серверов"
-                                    } else {
-                                        startConnectProcess()
-                                    }
-                                },
+                                onToggleConnection = { toggleConnectionFromQuickSettings() },
                                 onForceRemoveCurrentServer = { forceRemoveCurrentServer() }
                             )
-                            Screen.SETTINGS -> SettingsScreen(settingsStore, settingsTab, { settingsTab = it }, subscriptionUrl, { subscriptionUrl = it }, pingUrl, { pingUrl = it }, parallelPingsText, { parallelPingsText = it }, pingTimeoutText, { pingTimeoutText = it }, pingAttemptsText, { pingAttemptsText = it }, observatoryIntervalText, { observatoryIntervalText = it }, subscriptionRefreshText, { subscriptionRefreshText = it }, isHttpPing, { isHttpPing = it }, allowedTransports, { allowedTransports = it }, enableDebugLogs, { enableDebugLogs = it }, themeMode, { themeMode = it }, useSystemTheme, { useSystemTheme = it }, isDynamicSupported, colorSchemeOption, { colorSchemeOption = it }, customColor, { logExportLauncher.launch("netbox-logs.txt") }, { showColorPicker = true })
+                            Screen.SETTINGS -> SettingsScreen(settingsStore, settingsTab, { settingsTab = it }, subscriptionUrl, { subscriptionUrl = it }, pingUrl, { pingUrl = it }, parallelPingsText, { parallelPingsText = it }, pingTimeoutText, { pingTimeoutText = it }, pingAttemptsText, { pingAttemptsText = it }, observatoryIntervalText, { observatoryIntervalText = it }, subscriptionRefreshText, { subscriptionRefreshText = it }, isHttpPing, { isHttpPing = it }, allowedTransports, { allowedTransports = it }, enableDebugLogs, { enableDebugLogs = it }, notificationsEnabled, { enabled ->
+                                notificationsEnabled = enabled
+                                settingsStore.notificationsEnabled = enabled
+                                if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    settingsStore.notificationPermissionAsked = true
+                                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                }
+                                XrayVpnService.refreshNotification(context)
+                            }, themeMode, { themeMode = it }, useSystemTheme, { useSystemTheme = it }, isDynamicSupported, colorSchemeOption, { colorSchemeOption = it }, customColor, { logExportLauncher.launch("netbox-logs.txt") }, { showColorPicker = true })
                         }
                     }
                 }
@@ -917,11 +935,14 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
                 val currentProbeMs = if (forcedRecovery) {
                     -1L
                 } else {
+                    val localCredentials = LocalProxyAuth.credentials(context)
                     PingTester.testActiveProxyWithRetry(
                         pingUrl,
                         timeoutSeconds * 1000,
                         if (isHttpPing) "GET" else "HEAD",
-                        attempts = (pingAttemptsText.toIntOrNull() ?: 2).coerceIn(1, 5)
+                        attempts = (pingAttemptsText.toIntOrNull() ?: 2).coerceIn(1, 5),
+                        socksUsername = localCredentials.username,
+                        socksPassword = localCredentials.password
                     )
                 }
                 val currentHealthy = !forcedRecovery && currentProbeMs >= 0L
