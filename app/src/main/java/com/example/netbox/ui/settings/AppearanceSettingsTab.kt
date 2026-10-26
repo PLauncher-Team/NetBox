@@ -25,6 +25,8 @@ fun AppearanceSettingsTab(
     settingsStore: SettingsStore,
     enableDebugLogs: Boolean,
     onDebugLogsChange: (Boolean) -> Unit,
+    notificationsEnabled: Boolean,
+    onNotificationsEnabledChange: (Boolean) -> Unit,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     useSystemTheme: Boolean,
@@ -54,6 +56,34 @@ fun AppearanceSettingsTab(
             onCheckedChange = {
                 onDebugLogsChange(it)
                 settingsStore.enableDebugLogs = it
+            }
+        )
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(
+                text = "Уведомления о подключении",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = "Показывать сервер и состояние VPN. Android может оставлять обязательное системное уведомление, пока VPN работает.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(
+            checked = notificationsEnabled,
+            onCheckedChange = {
+                onNotificationsEnabledChange(it)
+                settingsStore.notificationsEnabled = it
             }
         )
     }
