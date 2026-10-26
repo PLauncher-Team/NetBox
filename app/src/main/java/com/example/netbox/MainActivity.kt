@@ -108,8 +108,6 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var subscriptionCatalog by remember { mutableStateOf<List<VlessConfig>>(emptyList()) }
     var countryCatalog by remember { mutableStateOf<List<CountryInfo>>(emptyList()) }
     var selectedCountryCode by remember { mutableStateOf(settingsStore.selectedCountryCode) }
-    var isCountryChangeInProgress by remember { mutableStateOf(false) }
-    var countryChangeJob by remember { mutableStateOf<Job?>(null) }
     var lastSourceSubscriptionUris by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isHttpPing by remember { mutableStateOf(settingsStore.isHttpPing) }
     var enableDebugLogs by remember { mutableStateOf(settingsStore.enableDebugLogs) }
@@ -474,7 +472,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     }
 
     fun handleCountrySelection(countryCode: String) {
-        if (countryCode == selectedCountryCode || isProcessing || isRefreshingSubscription || isCountryChangeInProgress || vpnState == VpnState.CONNECTING) return
+        if (countryCode == selectedCountryCode || isProcessing || isRefreshingSubscription || vpnState == VpnState.CONNECTING) return
 
         val countries = if (countryCatalog.isNotEmpty()) countryCatalog else CountryCatalog.load(context)
         countryCatalog = countries
@@ -506,65 +504,51 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             return
         }
 
-        isCountryChangeInProgress = true
-        statusMessage = "Проверка серверов страны $countryName..."
-        val timeoutSeconds = (pingTimeoutText.toIntOrNull() ?: 3).coerceIn(1, 60)
-        val timeoutMs = timeoutSeconds * 1000
-        countryChangeJob = coroutineScope.launch(Dispatchers.IO) {
-            try {
-                val tested = XrayVpnService.testCandidatesThroughTunnel(
-                    context = context,
-                    configs = candidates,
-                    pingUrl = pingUrl,
-                    parallelCount = (parallelPingsText.toIntOrNull() ?: 15).coerceIn(1, 100),
-                    timeoutMs = timeoutMs,
-                    method = if (isHttpPing) "GET" else "HEAD",
-                    attempts = (pingAttemptsText.toIntOrNull() ?: 2).coerceIn(1, 5)
-                ) { _, _, _ -> }
-                val healthy = tested.filter { it.pingMs >= 0L }.sortedBy { it.pingMs }
+        // Reuse known in-memory ping results. Never probe servers just because
+        // the user selected a different country; unknown results sort last.
+        val knownPings = (subscriptionCatalog + activeProxyPool +
+            listOfNotNull(XrayVpnService.connectedServer.value))
+            .filter { it.pingMs >= 0L }
+            .associate { it.rawUri to it.pingMs }
 
-                withContext(Dispatchers.Main) {
-                    if (XrayVpnService.vpnState.value != VpnState.CONNECTED) {
-                        statusMessage = "Подключение отключено"
-                    } else if (healthy.isEmpty()) {
-                        statusMessage = "Нет работающих серверов в стране $countryName · выбор не изменён"
-                    } else {
-                        selectedCountryCode = countryCode
-                        settingsStore.selectedCountryCode = countryCode
-                        activeProxyPool = healthy
-                        val best = healthy.first()
-                        val current = XrayVpnService.connectedServer.value
-                        XrayVpnService.updateProxyPool(
-                            context,
-                            listOf(best),
-                            (observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400),
-                            timeoutSeconds,
-                            pingUrl,
-                            if (isHttpPing) "GET" else "HEAD"
-                        )
-                        statusMessage = if (current?.rawUri == best.rawUri) {
-                            "Страна: $countryName · текущий сервер уже лучший"
-                        } else {
-                            "Страна: $countryName · переключение на ${best.remark}"
-                        }
-                        maintenanceToken++
-                    }
-                }
-            } catch (_: CancellationException) {
-                withContext(Dispatchers.Main) {
-                    statusMessage = "Смена страны отменена"
-                }
-            } catch (e: Exception) {
-                AppLogger.e("NetBoxLog-Country", "Could not switch country: ${e.message}", e)
-                withContext(Dispatchers.Main) {
-                    statusMessage = "Не удалось переключить страну"
-                }
-            } finally {
-                withContext(Dispatchers.Main) {
-                    isCountryChangeInProgress = false
-                }
+        val rankedCandidates = candidates
+            .onEach { candidate ->
+                knownPings[candidate.rawUri]?.let { candidate.pingMs = it }
+            }
+            .sortedWith(
+                compareBy<VlessConfig> { if (it.pingMs >= 0L) 0 else 1 }
+                    .thenBy { if (it.pingMs >= 0L) it.pingMs else Long.MAX_VALUE }
+            )
+
+        val best = rankedCandidates.first()
+        val current = XrayVpnService.connectedServer.value
+
+        selectedCountryCode = countryCode
+        settingsStore.selectedCountryCode = countryCode
+        activeProxyPool = rankedCandidates
+
+        if (current?.rawUri != best.rawUri) {
+            XrayVpnService.updateProxyPool(
+                context,
+                listOf(best),
+                (observatoryIntervalText.toIntOrNull() ?: 30).coerceIn(10, 86400),
+                (pingTimeoutText.toIntOrNull() ?: 3).coerceIn(1, 60),
+                pingUrl,
+                if (isHttpPing) "GET" else "HEAD"
+            )
+            statusMessage = if (best.pingMs >= 0L) {
+                "Страна: $countryName · переключение на ${best.remark} (${best.pingMs} мс, по сохранённому ping)"
+            } else {
+                "Страна: $countryName · переключение на ${best.remark} без повторного ping"
+            }
+        } else {
+            statusMessage = if (best.pingMs >= 0L) {
+                "Страна: $countryName · текущий сервер лучший по сохранённому ping (${best.pingMs} мс)"
+            } else {
+                "Страна: $countryName · текущий сервер оставлен без повторного ping"
             }
         }
+        maintenanceToken++
     }
 
     LaunchedEffect(Unit) {
@@ -720,7 +704,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                 selectedCountryCode = selectedCountryCode,
                                 countryServerCounts = countryServerCounts,
                                 countrySelectionEnabled = subscriptionCatalog.isNotEmpty() &&
-                                    !isProcessing && !isRefreshingSubscription && !isCountryChangeInProgress &&
+                                    !isProcessing && !isRefreshingSubscription &&
                                     vpnState != VpnState.CONNECTING,
                                 onCountrySelected = { handleCountrySelection(it) },
                                 onToggleConnection = {
