@@ -465,13 +465,8 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
                         requestedCountryCode,
                         countries
                     )
-                    if (cachedCandidates.isEmpty() && requestedCountryCode != CountryInfo.AUTO_CODE) {
-                        cachedCandidates = transportFiltered
-                        withContext(Dispatchers.Main) {
-                            selectedCountryCode = CountryInfo.AUTO_CODE
-                            settingsStore.selectedCountryCode = CountryInfo.AUTO_CODE
-                        }
-                    }
+                    // Do not silently change the user's country preference just because
+                    // the fresh cache has no server for it; fall through to refresh/test.
                     if (cachedCandidates.isNotEmpty()) {
                         withContext(Dispatchers.Main) {
                             countryCatalog = countries
