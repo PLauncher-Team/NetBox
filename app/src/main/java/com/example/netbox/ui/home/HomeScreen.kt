@@ -13,6 +13,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.netbox.xray.CountryInfo
 import com.example.netbox.xray.VlessConfig
 import com.example.netbox.xray.VpnState
 
@@ -26,9 +27,21 @@ fun HomeScreen(
     isProcessing: Boolean,
     forceCurrentServerRecovery: Boolean,
     pingUrl: String,
+    availableCountries: List<CountryInfo>,
+    selectedCountryCode: String,
+    countryServerCounts: Map<String, Int>,
+    countrySelectionEnabled: Boolean,
+    onCountrySelected: (String) -> Unit,
     onToggleConnection: () -> Unit,
     onForceRemoveCurrentServer: () -> Unit
 ) {
+    var countryMenuExpanded by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val selectedCountry = availableCountries.firstOrNull { it.code == selectedCountryCode }
+    val selectedCountryLabel = when {
+        selectedCountryCode == CountryInfo.AUTO_CODE -> "🌐  Автоматически"
+        selectedCountry != null -> "${selectedCountry.flag}  ${selectedCountry.russianName}"
+        else -> "Страна не найдена в подписке"
+    }
     val isConnected = vpnState == VpnState.CONNECTED
     val isActiveOrProcessing = isConnected || isProcessing || vpnState == VpnState.CONNECTING
     val displayServer = connectedServer ?: activeProxyPool.firstOrNull()
@@ -126,6 +139,87 @@ fun HomeScreen(
                 },
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
+        }
+
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Text(
+                text = "СТРАНА ПОДКЛЮЧЕНИЯ",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { countryMenuExpanded = true },
+                    enabled = countrySelectionEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.large
+                ) {
+                    Text(
+                        text = selectedCountryLabel,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text("▾", style = MaterialTheme.typography.titleMedium)
+                }
+                DropdownMenu(
+                    expanded = countryMenuExpanded,
+                    onDismissRequest = { countryMenuExpanded = false },
+                    modifier = Modifier.fillMaxWidth(0.92f)
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("🌐  Автоматически")
+                                Text(
+                                    text = "Любая страна · лучший доступный сервер",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        onClick = {
+                            countryMenuExpanded = false
+                            onCountrySelected(CountryInfo.AUTO_CODE)
+                        }
+                    )
+                    availableCountries.forEach { country ->
+                        DropdownMenuItem(
+                            text = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(country.flag, style = MaterialTheme.typography.titleLarge)
+                                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(country.russianName)
+                                        Text(
+                                            text = country.englishName + " · " +
+                                                (countryServerCounts[country.code] ?: 0) + " серверов",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            },
+                            onClick = {
+                                countryMenuExpanded = false
+                                onCountrySelected(country.code)
+                            }
+                        )
+                    }
+                }
+            }
+            if (availableCountries.isEmpty()) {
+                Text(
+                    text = "Страны появятся после загрузки подписки; распознаются по названиям серверов.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         Surface(
