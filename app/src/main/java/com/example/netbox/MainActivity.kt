@@ -474,7 +474,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     }
 
     fun handleCountrySelection(countryCode: String) {
-        if (countryCode == selectedCountryCode || isProcessing || isRefreshingSubscription || isCountryChangeInProgress) return
+        if (countryCode == selectedCountryCode || isProcessing || isRefreshingSubscription || isCountryChangeInProgress || vpnState == VpnState.CONNECTING) return
 
         val countries = if (countryCatalog.isNotEmpty()) countryCatalog else CountryCatalog.load(context)
         countryCatalog = countries
@@ -720,7 +720,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                 selectedCountryCode = selectedCountryCode,
                                 countryServerCounts = countryServerCounts,
                                 countrySelectionEnabled = subscriptionCatalog.isNotEmpty() &&
-                                    !isProcessing && !isRefreshingSubscription && !isCountryChangeInProgress,
+                                    !isProcessing && !isRefreshingSubscription && !isCountryChangeInProgress &&
+                                    vpnState != VpnState.CONNECTING,
                                 onCountrySelected = { handleCountrySelection(it) },
                                 onToggleConnection = {
                                     if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
