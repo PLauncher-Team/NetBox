@@ -629,6 +629,12 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         }
 
         isCheckingCountryPool = true
+        if (requestedUrl != loadedCountryPoolUrl ||
+            requestedTransports != loadedCountryPoolTransports
+        ) {
+            countryCandidatePool = emptyList()
+            pingDataVersion++
+        }
         if (vpnState != VpnState.CONNECTED) {
             statusMessage = "Проверка серверов подписки..."
         }
