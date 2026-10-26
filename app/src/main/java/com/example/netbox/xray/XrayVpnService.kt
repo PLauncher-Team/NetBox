@@ -222,6 +222,7 @@ class XrayVpnService : VpnService() {
         activeProbeTimeoutSeconds = pendingProbeTimeoutSeconds
         activeProbeMethod = pendingProbeMethod
         _vpnState.value = VpnState.CONNECTING
+        refreshQuickSettingsTile()
 
         try {
             ensureNotificationChannel()
@@ -541,19 +542,19 @@ class XrayVpnService : VpnService() {
         startForeground(1, buildForegroundNotification(message))
     }
 
-    private fun refreshForegroundNotification(message: String = run {
-        val state = _vpnState.value
-        val config = _connectedServer.value ?: currentConfig
-        when (state) {
-            VpnState.CONNECTING -> "Подключение..."
-            VpnState.CONNECTED -> "Подключено" + (config?.remark?.let { " · $it" } ?: "")
-            VpnState.DISCONNECTED -> "Отключено"
-        }
-    }) {
+    private fun refreshForegroundNotification(message: String? = null) {
         if (vpnInterface == null && _vpnState.value == VpnState.DISCONNECTED) return
+        val stateMessage = message ?: run {
+            val config = _connectedServer.value ?: currentConfig
+            when (_vpnState.value) {
+                VpnState.CONNECTING -> "Подключение" + (config?.remark?.let { " · $it" } ?: "")
+                VpnState.CONNECTED -> "Подключено" + (config?.remark?.let { " · $it" } ?: "")
+                VpnState.DISCONNECTED -> "Отключено"
+            }
+        }
         ensureNotificationChannel()
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(1, buildForegroundNotification(message))
+            .notify(1, buildForegroundNotification(stateMessage))
     }
 
     private fun refreshQuickSettingsTile() {
