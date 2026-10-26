@@ -437,7 +437,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                 }
 
                 withContext(Dispatchers.Main) {
-                    statusMessage = "Проверка прокси 0/${countryFiltered.size}"
+                    statusMessage = "Проверка прокси 0/${transportFiltered.size}"
                 }
 
                 val parallelCount = (parallelPingsText.toIntOrNull() ?: 15).coerceIn(1, 100)
@@ -446,7 +446,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
                 val testedConfigs = XrayVpnService.testCandidatesThroughTunnel(
                     context = context,
-                    configs = countryFiltered,
+                    configs = transportFiltered,
                     pingUrl = pingUrl,
                     parallelCount = parallelCount,
                     timeoutMs = timeoutMs,
@@ -458,21 +458,29 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     }
                 }
                 coroutineContext.ensureActive()
-                val testedUris = testedConfigs.map { it.rawUri }.toSet()
+                val healthyAllCountryConfigs = testedConfigs.filter {
+                    it.pingMs >= 0L
+                }
                 withContext(Dispatchers.Main) {
-                    countryCandidatePool = countryCandidatePool.filter { candidate ->
-                        candidate.rawUri !in testedUris || candidate.pingMs >= 0L
-                    }
+                    // Keep every healthy server from every country for country counts
+                    // and min-ping display. The active VPN pool below stays country-specific.
+                    countryCandidatePool = healthyAllCountryConfigs
                     pingDataVersion++
                 }
 
-                val healthyConfigs = testedConfigs.filter {
-                    it.pingMs >= 0L
-                }
+                val healthyConfigs = CountryCatalog.filterByCountry(
+                    healthyAllCountryConfigs,
+                    requestedCountryCode,
+                    countries
+                )
 
                 if (healthyConfigs.isEmpty()) {
                     withContext(Dispatchers.Main) {
-                        statusMessage = "Нет доступных прокси с пингом до ${timeoutSeconds} с"
+                        statusMessage = if (requestedCountryCode == CountryInfo.AUTO_CODE) {
+                            "Нет доступных прокси с пингом до ${timeoutSeconds} с"
+                        } else {
+                            "Для выбранной страны нет доступных серверов с пингом до ${timeoutSeconds} с"
+                        }
                         isProcessing = false
                     }
                     return@launch
@@ -628,12 +636,13 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                 ProxyTransport.allows(it.params["type"], allowedTransports)
             }
             if (selectedCountryCode != CountryInfo.AUTO_CODE &&
-                fetched.configs.none { config ->
-                    ProxyTransport.allows(config.params["type"], allowedTransports) &&
-                        CountryCatalog.detectCountry(config.remark, countries)?.code == selectedCountryCode
+                countryCandidatePool.none { config ->
+                    CountryCatalog.detectCountry(config.remark, countries)?.code == selectedCountryCode
                 }
             ) {
-                statusMessage = "Сохранённая страна не найдена в подписке · выберите другую или автоматический режим"
+                selectedCountryCode = CountryInfo.AUTO_CODE
+                settingsStore.selectedCountryCode = CountryInfo.AUTO_CODE
+                statusMessage = "Сохранённая страна отсутствует в текущем пуле · выбран автоматический режим"
             }
         } catch (e: CancellationException) {
             throw e
