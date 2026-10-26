@@ -358,6 +358,7 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
                 }
 
                 val healthyAllCountryConfigs = testWorkingCandidates(transportCandidates)
+                ProxyCacheStore.save(context, subscriptionUrl, healthyAllCountryConfigs)
                 withContext(Dispatchers.Main) {
                     countryCandidatePool = healthyAllCountryConfigs
                     pingDataVersion++
@@ -937,6 +938,7 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
             // Recheck every allowed country, not just the currently selected one. This
             // prevents untested countries from reappearing without ping values after refresh.
             val healthyAllCountryConfigs = testCandidates(transportCandidates)
+            ProxyCacheStore.save(context, subscriptionUrl, healthyAllCountryConfigs)
             countryCandidatePool = healthyAllCountryConfigs
             if (healthyAllCountryConfigs.isEmpty()) {
                 statusMessage = "Обновление подписки: работающие прокси не найдены"
