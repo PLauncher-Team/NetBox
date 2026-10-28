@@ -714,7 +714,59 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
     }
 
     LaunchedEffect(Unit) {
-        countryCatalog = withContext(Dispatchers.IO) { CountryCatalog.load(context) }
+        withContext(Dispatchers.IO) {
+            val countries = CountryCatalog.load(context)
+            val cached = ProxyCacheStore.load(context)
+            countries to cached
+        }.let { (countries, cached) ->
+            countryCatalog = countries
+
+            // Restore the saved all-country pool when the activity is recreated while
+            // the VPN service is still alive. The UI state is in-memory, but the tested
+            // proxy cache survives closing/reopening the app.
+            if (cached != null && cached.subscriptionUrl == subscriptionUrl) {
+                val healthyConfigs = cached.configs
+                    .filter { it.pingMs >= 0L }
+                    .distinctBy { it.rawUri }
+                    .sortedBy { it.pingMs }
+                val transportFiltered = healthyConfigs.filter { config ->
+                    ProxyTransport.allows(config.params["type"], allowedTransports)
+                }
+                subscriptionCatalog = cached.configs
+                countryCandidatePool = transportFiltered
+                lastSourceSubscriptionUris = cached.configs.map { it.rawUri }.toSet()
+
+                if (XrayVpnService.vpnState.value == VpnState.CONNECTED) {
+                    val selectedPool = CountryCatalog.filterByCountry(
+                        transportFiltered,
+                        selectedCountryCode,
+                        countries
+                    )
+                    // Keep the connected server visible even if an older cache does not
+                    // contain it, but don't restart or modify the running VPN.
+                    activeProxyPool = selectedPool.ifEmpty {
+                        listOfNotNull(XrayVpnService.connectedServer.value)
+                    }
+                    statusMessage = "Восстановлен кеш серверов · ${transportFiltered.size} рабочих прокси"
+                } else {
+                    activeProxyPool = CountryCatalog.filterByCountry(
+                        transportFiltered,
+                        selectedCountryCode,
+                        countries
+                    )
+                    statusMessage = if (transportFiltered.isNotEmpty()) {
+                        "Загружены сохранённые серверы · ${transportFiltered.size} рабочих прокси"
+                    } else {
+                        statusMessage
+                    }
+                }
+                pingDataVersion++
+            } else if (XrayVpnService.vpnState.value == VpnState.CONNECTED) {
+                // Last-resort UI fallback if the cache is missing or belongs to another
+                // subscription; this does not claim to reconstruct the full proxy pool.
+                activeProxyPool = listOfNotNull(XrayVpnService.connectedServer.value)
+            }
+        }
     }
 
 
