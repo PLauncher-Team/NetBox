@@ -19,8 +19,6 @@ fun SettingsScreen(
     settingsStore: SettingsStore,
     settingsTab: Int,
     onSettingsTabChange: (Int) -> Unit,
-    subscriptionUrl: String,
-    onSubscriptionUrlChange: (String) -> Unit,
     pingUrl: String,
     onPingUrlChange: (String) -> Unit,
     parallelPingsText: String,
@@ -73,8 +71,6 @@ fun SettingsScreen(
         if (settingsTab == 0) {
             ConnectionSettingsTab(
                 settingsStore = settingsStore,
-                subscriptionUrl = subscriptionUrl,
-                onSubscriptionUrlChange = onSubscriptionUrlChange,
                 pingUrl = pingUrl,
                 onPingUrlChange = onPingUrlChange,
                 parallelPingsText = parallelPingsText,
