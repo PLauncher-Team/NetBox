@@ -2,6 +2,7 @@ package com.example.netbox
 
 import android.app.PendingIntent
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
@@ -30,10 +31,20 @@ class NetBoxTileService : TileService() {
         }
 
         val settings = SettingsStore(this)
+        val enabledSubscriptionUrls = settings.subscriptions
+            .filter { it.enabled }
+            .map { it.url.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (enabledSubscriptionUrls.isEmpty()) {
+            openAppForSetup()
+            return
+        }
+        val subscriptionCacheKey = enabledSubscriptionUrls.joinToString(separator = "|netbox-subscription|")
         val countries = CountryCatalog.load(this)
         val cached = ProxyCacheStore.loadFresh(
             context = this,
-            subscriptionUrl = settings.subscriptionUrl,
+            subscriptionUrl = subscriptionCacheKey,
             refreshIntervalMinutes = settings.subscriptionRefreshMinutes
         )
         val transportPool = cached
@@ -77,17 +88,17 @@ class NetBoxTileService : TileService() {
             action = MainActivity.ACTION_TILE_TOGGLE
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            42,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                42,
-                launchIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
             startActivityAndCollapse(pendingIntent)
         } else {
-            @Suppress("DEPRECATION")
-            startActivityAndCollapse(launchIntent)
+            // The PendingIntent overload is available from API 34 only.
+            startActivity(launchIntent)
         }
     }
 
@@ -107,7 +118,7 @@ class NetBoxTileService : TileService() {
     }
 
     companion object {
-        fun requestUpdate(context: android.content.Context) {
+        fun requestUpdate(context: Context) {
             TileService.requestListeningState(
                 context.applicationContext,
                 ComponentName(context.applicationContext, NetBoxTileService::class.java)
