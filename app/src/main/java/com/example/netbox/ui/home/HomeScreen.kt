@@ -48,6 +48,9 @@ fun HomeScreen(
     countrySelectionEnabled: Boolean,
     onCountrySelected: (String) -> Unit,
     onToggleConnection: () -> Unit,
+    onOpenSubscriptions: () -> Unit,
+    subscriptionCount: Int,
+    enabledSubscriptionCount: Int,
     onForceRemoveCurrentServer: () -> Unit
 ) {
     var countryMenuExpanded by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
@@ -154,6 +157,14 @@ fun HomeScreen(
                 },
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
+        }
+
+        OutlinedButton(
+            onClick = onOpenSubscriptions,
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.large
+        ) {
+            Text("Подписки · $enabledSubscriptionCount/$subscriptionCount")
         }
 
         Column(
