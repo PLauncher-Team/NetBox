@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import com.example.netbox.ui.components.ColorPickerDialog
 import com.example.netbox.ui.home.HomeScreen
 import com.example.netbox.ui.settings.SettingsScreen
+import com.example.netbox.ui.subscriptions.SubscriptionManagerScreen
 import com.example.netbox.ui.theme.AppColorScheme
 import com.example.netbox.ui.theme.NetBoxTheme
 import com.example.netbox.xray.AppLogger
@@ -69,6 +70,7 @@ import com.example.netbox.xray.PingTester
 import com.example.netbox.xray.ProxyCacheStore
 import com.example.netbox.xray.ProxyTransport
 import com.example.netbox.xray.SubscriptionFetcher
+import com.example.netbox.xray.SubscriptionFetchResult
 import com.example.netbox.xray.VlessConfig
 import com.example.netbox.xray.VpnState
 import com.example.netbox.xray.XrayVpnService
@@ -83,6 +85,7 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     private lateinit var settingsStore: SettingsStore
     private var tileToggleRequestCounter by mutableIntStateOf(0)
+    private var tilePreferencesRequestCounter by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,33 +93,49 @@ class MainActivity : ComponentActivity() {
         LocalProxyAuth.installUrlAuthenticator(this)
         AppLogger.isEnabled = settingsStore.enableDebugLogs
         tileToggleRequestCounter = if (intent?.action == ACTION_TILE_TOGGLE) 1 else 0
+        tilePreferencesRequestCounter = if (intent?.action == ACTION_TILE_PREFERENCES) 1 else 0
         enableEdgeToEdge()
         setContent {
-            NetBoxApp(settingsStore, tileToggleRequestCounter)
+            NetBoxApp(settingsStore, tileToggleRequestCounter, tilePreferencesRequestCounter)
         }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.action == ACTION_TILE_TOGGLE) {
-            tileToggleRequestCounter++
+        when (intent.action) {
+            ACTION_TILE_TOGGLE -> tileToggleRequestCounter++
+            ACTION_TILE_PREFERENCES -> tilePreferencesRequestCounter++
         }
     }
 
     companion object {
         const val ACTION_TILE_TOGGLE = "com.example.netbox.action.TILE_TOGGLE"
+        const val ACTION_TILE_PREFERENCES = "android.service.quicksettings.action.QS_TILE_PREFERENCES"
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
+fun NetBoxApp(
+    settingsStore: SettingsStore,
+    tileToggleRequestCounter: Int = 0,
+    tilePreferencesRequestCounter: Int = 0
+) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
     var currentScreen by remember { mutableStateOf(Screen.HOME) }
-    var subscriptionUrl by remember { mutableStateOf(settingsStore.subscriptionUrl) }
+    var subscriptions by remember { mutableStateOf(settingsStore.subscriptions) }
+    val enabledSubscriptionUrls = remember(subscriptions) {
+        subscriptions.filter { it.enabled }
+            .map { it.url.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+    val subscriptionUrl = remember(enabledSubscriptionUrls) {
+        enabledSubscriptionUrls.joinToString(separator = "|netbox-subscription|")
+    }
     var pingUrl by remember { mutableStateOf(settingsStore.pingUrl) }
     var parallelPingsText by remember { mutableStateOf(settingsStore.parallelPings.toString()) }
     var pingTimeoutText by remember { mutableStateOf(settingsStore.pingTimeoutSeconds.toString()) }
@@ -202,6 +221,23 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
         }
     }
 
+    suspend fun fetchAllEnabledSubscriptions(
+        urls: List<String>,
+        throughVpn: Boolean = false
+    ): SubscriptionFetchResult {
+        val results = urls.map { url ->
+            SubscriptionFetcher.fetchVlessConfigs(
+                context = context,
+                urlStr = url,
+                throughVpn = throughVpn
+            )
+        }
+        return SubscriptionFetchResult(
+            configs = results.flatMap { it.configs }.distinctBy { it.rawUri },
+            loadedFromCache = results.isNotEmpty() && results.all { it.loadedFromCache }
+        )
+    }
+
     suspend fun testWorkingCandidates(
         configs: List<VlessConfig>,
         onProgress: (completed: Int, total: Int, bestConfig: VlessConfig?) -> Unit = { _, _, _ -> }
@@ -229,7 +265,7 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
             .toList()
     }
 
-    BackHandler(enabled = currentScreen == Screen.SETTINGS) {
+    BackHandler(enabled = currentScreen == Screen.SETTINGS || currentScreen == Screen.SUBSCRIPTIONS) {
         currentScreen = Screen.HOME
     }
 
@@ -321,18 +357,16 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
     }
 
     fun requestSubscriptionRefresh() {
-        if (isRefreshingSubscription || isCheckingCountryPool || subscriptionUrl.isBlank()) return
+        val subscriptionUrls = subscriptions.filter { it.enabled }
+            .map { it.url.trim() }.filter { it.isNotBlank() }.distinct()
+        if (isRefreshingSubscription || isCheckingCountryPool || subscriptionUrls.isEmpty()) return
         isRefreshingSubscription = true
         val requestedCountryCode = selectedCountryCode
 
         coroutineScope.launch(Dispatchers.IO) {
             try {
                 val throughVpn = XrayVpnService.vpnState.value == VpnState.CONNECTED
-                val fetched = SubscriptionFetcher.fetchVlessConfigs(
-                    context = context,
-                    urlStr = subscriptionUrl,
-                    throughVpn = throughVpn
-                )
+                val fetched = fetchAllEnabledSubscriptions(subscriptionUrls, throughVpn = throughVpn)
                 if (fetched.configs.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         statusMessage = "Не удалось загрузить подписку"
@@ -439,8 +473,10 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
     fun startConnectProcess() {
         if (isProcessing || isCheckingCountryPool) return
 
-        if (subscriptionUrl.isBlank()) {
-            statusMessage = "Укажите URL подписки"
+        val subscriptionUrls = subscriptions.filter { it.enabled }
+            .map { it.url.trim() }.filter { it.isNotBlank() }.distinct()
+        if (subscriptionUrls.isEmpty()) {
+            statusMessage = "Добавьте и включите хотя бы одну подписку"
             return
         }
 
@@ -498,7 +534,7 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
                     }
                 }
 
-                val fetchResult = SubscriptionFetcher.fetchVlessConfigs(context, subscriptionUrl)
+                val fetchResult = fetchAllEnabledSubscriptions(subscriptionUrls)
                 coroutineContext.ensureActive()
                 val countries = CountryCatalog.load(context)
                 val refreshedConfigs = preserveKnownPings(fetchResult.configs)
@@ -619,6 +655,32 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
         }
     }
 
+    var refreshAfterSubscriptionChange by remember { mutableStateOf(false) }
+
+    fun applySubscriptionChanges(updated: List<SubscriptionEntry>) {
+        subscriptions = updated
+        settingsStore.subscriptions = updated
+        val enabledCount = updated.count { it.enabled && it.url.isNotBlank() }
+        if (enabledCount == 0) {
+            if (vpnState != VpnState.DISCONNECTED || isProcessing) stopVpnProcess()
+            subscriptionCatalog = emptyList()
+            countryCandidatePool = emptyList()
+            activeProxyPool = emptyList()
+            statusMessage = "Добавьте и включите хотя бы одну подписку"
+        } else if (vpnState == VpnState.CONNECTED) {
+            refreshAfterSubscriptionChange = true
+        } else {
+            statusMessage = "Список подписок обновлён · включено: $enabledCount"
+        }
+    }
+
+    LaunchedEffect(subscriptionUrl, refreshAfterSubscriptionChange) {
+        if (refreshAfterSubscriptionChange) {
+            refreshAfterSubscriptionChange = false
+            requestSubscriptionRefresh()
+        }
+    }
+
     fun toggleConnectionFromQuickSettings() {
         if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
             stopVpnProcess()
@@ -632,6 +694,12 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
     LaunchedEffect(tileToggleRequestCounter) {
         if (tileToggleRequestCounter > 0) {
             toggleConnectionFromQuickSettings()
+        }
+    }
+
+    LaunchedEffect(tilePreferencesRequestCounter) {
+        if (tilePreferencesRequestCounter > 0) {
+            currentScreen = Screen.HOME
         }
     }
 
@@ -856,11 +924,11 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
                         transitionSpec = {
                             fadeIn(animationSpec = tween(300)) + slideInHorizontally(
                                 animationSpec = tween(300),
-                                initialOffsetX = { fullWidth -> if (targetState == Screen.SETTINGS) fullWidth / 3 else -fullWidth / 3 }
+                                initialOffsetX = { fullWidth -> if (targetState == Screen.SETTINGS || targetState == Screen.SUBSCRIPTIONS) fullWidth / 3 else -fullWidth / 3 }
                             ) togetherWith
                                 fadeOut(animationSpec = tween(300)) + slideOutHorizontally(
                                     animationSpec = tween(300),
-                                    targetOffsetX = { fullWidth -> if (targetState == Screen.SETTINGS) -fullWidth / 3 else fullWidth / 3 }
+                                    targetOffsetX = { fullWidth -> if (targetState == Screen.SETTINGS || targetState == Screen.SUBSCRIPTIONS) -fullWidth / 3 else fullWidth / 3 }
                                 )
                         },
                         label = "screenTransition",
@@ -886,9 +954,12 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
                                     vpnState != VpnState.CONNECTING,
                                 onCountrySelected = { handleCountrySelection(it) },
                                 onToggleConnection = { toggleConnectionFromQuickSettings() },
+                                onOpenSubscriptions = { currentScreen = Screen.SUBSCRIPTIONS },
+                                subscriptionCount = subscriptions.size,
+                                enabledSubscriptionCount = subscriptions.count { it.enabled },
                                 onForceRemoveCurrentServer = { forceRemoveCurrentServer() }
                             )
-                            Screen.SETTINGS -> SettingsScreen(settingsStore, settingsTab, { settingsTab = it }, subscriptionUrl, { subscriptionUrl = it }, pingUrl, { pingUrl = it }, parallelPingsText, { parallelPingsText = it }, pingTimeoutText, { pingTimeoutText = it }, pingAttemptsText, { pingAttemptsText = it }, observatoryIntervalText, { observatoryIntervalText = it }, subscriptionRefreshText, { subscriptionRefreshText = it }, isHttpPing, { isHttpPing = it }, allowedTransports, { allowedTransports = it }, enableDebugLogs, { enableDebugLogs = it }, notificationsEnabled, { enabled ->
+                            Screen.SETTINGS -> SettingsScreen(settingsStore, settingsTab, { settingsTab = it }, pingUrl, { pingUrl = it }, parallelPingsText, { parallelPingsText = it }, pingTimeoutText, { pingTimeoutText = it }, pingAttemptsText, { pingAttemptsText = it }, observatoryIntervalText, { observatoryIntervalText = it }, subscriptionRefreshText, { subscriptionRefreshText = it }, isHttpPing, { isHttpPing = it }, allowedTransports, { allowedTransports = it }, enableDebugLogs, { enableDebugLogs = it }, notificationsEnabled, { enabled ->
                                 notificationsEnabled = enabled
                                 settingsStore.notificationsEnabled = enabled
                                 if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -899,6 +970,10 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
                                 }
                                 XrayVpnService.refreshNotification(context)
                             }, themeMode, { themeMode = it }, useSystemTheme, { useSystemTheme = it }, isDynamicSupported, colorSchemeOption, { colorSchemeOption = it }, customColor, { logExportLauncher.launch("netbox-logs.txt") }, { showColorPicker = true })
+                            Screen.SUBSCRIPTIONS -> SubscriptionManagerScreen(
+                                subscriptions = subscriptions,
+                                onSubscriptionsChange = { applySubscriptionChanges(it) }
+                            )
                         }
                     }
                 }
@@ -956,9 +1031,8 @@ fun NetBoxApp(settingsStore: SettingsStore, tileToggleRequestCounter: Int = 0) {
 
         suspend fun refreshSubscription(force: Boolean): Boolean {
             val fetched = withContext(Dispatchers.IO) {
-                SubscriptionFetcher.fetchVlessConfigs(
-                    context,
-                    subscriptionUrl,
+                fetchAllEnabledSubscriptions(
+                    enabledSubscriptionUrls,
                     throughVpn = XrayVpnService.vpnState.value == VpnState.CONNECTED
                 )
             }
