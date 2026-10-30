@@ -658,19 +658,27 @@ fun NetBoxApp(
     var refreshAfterSubscriptionChange by remember { mutableStateOf(false) }
 
     fun applySubscriptionChanges(updated: List<SubscriptionEntry>) {
+        val wasConnecting = isProcessing || vpnState == VpnState.CONNECTING
         subscriptions = updated
         settingsStore.subscriptions = updated
+        if (wasConnecting) stopVpnProcess()
+
         val enabledCount = updated.count { it.enabled && it.url.isNotBlank() }
-        if (enabledCount == 0) {
-            if (vpnState != VpnState.DISCONNECTED || isProcessing) stopVpnProcess()
-            subscriptionCatalog = emptyList()
-            countryCandidatePool = emptyList()
-            activeProxyPool = emptyList()
-            statusMessage = "Добавьте и включите хотя бы одну подписку"
-        } else if (vpnState == VpnState.CONNECTED) {
-            refreshAfterSubscriptionChange = true
-        } else {
-            statusMessage = "Список подписок обновлён · включено: $enabledCount"
+        when {
+            enabledCount == 0 -> {
+                if (vpnState != VpnState.DISCONNECTED || isProcessing) stopVpnProcess()
+                subscriptionCatalog = emptyList()
+                countryCandidatePool = emptyList()
+                activeProxyPool = emptyList()
+                statusMessage = "Добавьте и включите хотя бы одну подписку"
+            }
+            vpnState == VpnState.CONNECTED -> refreshAfterSubscriptionChange = true
+            else -> {
+                subscriptionCatalog = emptyList()
+                countryCandidatePool = emptyList()
+                activeProxyPool = emptyList()
+                statusMessage = "Список подписок обновлён · включено: $enabledCount"
+            }
         }
     }
 
