@@ -3,11 +3,15 @@ package com.example.netbox.xray
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import com.example.netbox.MainActivity
+import com.example.netbox.NetBoxTileService
+import com.example.netbox.SettingsStore
 import com.v2ray.ang.service.TProxyService
 import libXray.LibXray
 import kotlinx.coroutines.CancellationException
@@ -131,6 +135,7 @@ class XrayVpnService : VpnService() {
             ) {
                 return try {
                     val portMap = service.prepareCandidateProbeRoutes(configs)
+                    val credentials = LocalProxyAuth.credentials(context)
                     PingTester.testCandidatesOnPorts(
                         configs = configs,
                         portByRawUri = portMap,
@@ -140,6 +145,8 @@ class XrayVpnService : VpnService() {
                         parallelCount = parallelCount,
                         attempts = attempts,
                         stopAfterFirstHealthy = stopAfterFirstHealthy,
+                        socksUsername = credentials.username,
+                        socksPassword = credentials.password,
                         onProgress = onProgress
                     )
                 } catch (e: CancellationException) {
@@ -161,6 +168,10 @@ class XrayVpnService : VpnService() {
                 attempts = attempts,
                 onProgress = onProgress
             )
+        }
+
+        fun refreshNotification(context: Context) {
+            instance?.refreshForegroundNotification()
         }
 
         fun stopVpn(context: Context) {
@@ -189,6 +200,7 @@ class XrayVpnService : VpnService() {
                 }
             }
             "UPDATE_POOL" -> updateProxyPoolInternal()
+            "REFRESH_NOTIFICATION" -> refreshForegroundNotification()
             "STOP" -> stopVpnInternal()
         }
         return START_NOT_STICKY
@@ -210,26 +222,11 @@ class XrayVpnService : VpnService() {
         activeProbeTimeoutSeconds = pendingProbeTimeoutSeconds
         activeProbeMethod = pendingProbeMethod
         _vpnState.value = VpnState.CONNECTING
+        refreshQuickSettingsTile()
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val channelId = "netbox_vpn_channel"
-                val channel = NotificationChannel(
-                    channelId,
-                    "NetBox VPN Service",
-                    NotificationManager.IMPORTANCE_LOW
-                )
-                val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                notificationManager.createNotificationChannel(channel)
-
-                val notification = Notification.Builder(this, channelId)
-                    .setContentTitle("NetBox VPN")
-                    .setContentText("Подключение к ${config.remark}...")
-                    .setSmallIcon(android.R.drawable.ic_menu_compass)
-                    .build()
-
-                startForeground(1, notification)
-            }
+            ensureNotificationChannel()
+            startForegroundNotification("Подключение к ${config.remark}...")
 
             startXrayEngine(
                 activeProxyPool,
@@ -264,6 +261,7 @@ class XrayVpnService : VpnService() {
             }
             vpnInterface = pfd
 
+            val credentials = LocalProxyAuth.credentials(this)
             val hevConfigFile = File(filesDir, "hev-socks5-tunnel.yaml")
             hevConfigFile.writeText(
                 """
@@ -273,6 +271,8 @@ class XrayVpnService : VpnService() {
                 socks5:
                   port: 10808
                   address: 127.0.0.1
+                  username: ${credentials.username}
+                  password: ${credentials.password}
                   udp: 'udp'
                 misc:
                   task-stack-size: 8192
@@ -287,6 +287,8 @@ class XrayVpnService : VpnService() {
 
             _connectedServer.value = config
             _vpnState.value = VpnState.CONNECTED
+            refreshForegroundNotification("Подключено · ${config.remark}")
+            refreshQuickSettingsTile()
             AppLogger.d(TAG, "VPN started on ${config.remark}; app candidate pool contains ${activeProxyPool.size} proxies")
         } catch (e: Throwable) {
             AppLogger.e(TAG, "Failed to start VPN: ${e.message}", e)
@@ -311,7 +313,9 @@ class XrayVpnService : VpnService() {
             observatoryIntervalSeconds = observatoryIntervalSeconds,
             probeTimeoutSeconds = probeTimeoutSeconds,
             probeMethod = probeMethod,
-            includeCandidateProbeInbounds = includeCandidateProbeInbounds
+            includeCandidateProbeInbounds = includeCandidateProbeInbounds,
+            socksUsername = LocalProxyAuth.credentials(this).username,
+            socksPassword = LocalProxyAuth.credentials(this).password
         )
         val configFile = File(filesDir, "xray_config.json")
         configFile.writeText(jsonConfig)
@@ -332,6 +336,10 @@ class XrayVpnService : VpnService() {
         }
         xrayStarted = true
         _connectedServer.value = primary
+        if (_vpnState.value == VpnState.CONNECTED) {
+            refreshForegroundNotification("Подключено · ${primary.remark}")
+            refreshQuickSettingsTile()
+        }
     }
 
     private fun prepareCandidateProbeRoutes(candidates: List<VlessConfig>): Map<String, Int> {
@@ -434,6 +442,8 @@ class XrayVpnService : VpnService() {
             activeProbeMethod = pendingProbeMethod
             currentConfig = newPool.first()
             _connectedServer.value = currentConfig
+            refreshForegroundNotification("Подключено · ${newPool.first().remark}")
+            refreshQuickSettingsTile()
             AppLogger.d(TAG, "Switched selected proxy to ${newPool.first().remark}")
         } catch (e: Throwable) {
             AppLogger.e(TAG, "Could not apply refreshed proxy pool; restoring previous pool", e)
@@ -478,8 +488,83 @@ class XrayVpnService : VpnService() {
         activeProxyPool = emptyList()
         _connectedServer.value = null
         _vpnState.value = VpnState.DISCONNECTED
+        refreshQuickSettingsTile()
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(1)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         instance = null
         stopSelf()
+    }
+
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    "netbox_vpn_channel",
+                    "NetBox VPN",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Состояние VPN-подключения NetBox"
+                    setShowBadge(false)
+                }
+            )
+        }
+    }
+
+    private fun buildForegroundNotification(message: String): Notification {
+        val notificationsEnabled = SettingsStore(this).notificationsEnabled
+        val visibleMessage = if (notificationsEnabled) message else "VPN-сервис работает"
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        @Suppress("DEPRECATION")
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, "netbox_vpn_channel")
+        } else {
+            // Android 7.x has no channel-aware constructor; minSdk is 24.
+            Notification.Builder(this)
+        }
+        return builder
+            .setContentTitle("NetBox VPN")
+            .setContentText(visibleMessage)
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .build()
+    }
+
+    private fun startForegroundNotification(message: String) {
+        startForeground(1, buildForegroundNotification(message))
+    }
+
+    private fun refreshForegroundNotification(message: String? = null) {
+        if (vpnInterface == null && _vpnState.value == VpnState.DISCONNECTED) return
+        val stateMessage = message ?: run {
+            val config = _connectedServer.value ?: currentConfig
+            when (_vpnState.value) {
+                VpnState.CONNECTING -> "Подключение" + (config?.remark?.let { " · $it" } ?: "")
+                VpnState.CONNECTED -> "Подключено" + (config?.remark?.let { " · $it" } ?: "")
+                VpnState.DISCONNECTED -> "Отключено"
+            }
+        }
+        ensureNotificationChannel()
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(1, buildForegroundNotification(stateMessage))
+    }
+
+    private fun refreshQuickSettingsTile() {
+        try {
+            NetBoxTileService.requestUpdate(this)
+        } catch (e: Exception) {
+            AppLogger.d(TAG, "Could not update Quick Settings tile: ${e.message}")
+        }
     }
 
     override fun onDestroy() {

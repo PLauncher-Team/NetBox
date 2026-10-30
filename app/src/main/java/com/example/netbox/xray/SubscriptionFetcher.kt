@@ -10,6 +10,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.Proxy
 import java.net.InetSocketAddress
+import java.security.MessageDigest
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -32,7 +33,8 @@ object SubscriptionFetcher {
         throughVpn: Boolean = false
     ): SubscriptionFetchResult =
         withContext(Dispatchers.IO) {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val legacyPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val urlPrefs = context.getSharedPreferences("${PREFS_NAME}_${cacheKey(urlStr)}", Context.MODE_PRIVATE)
             AppLogger.d(TAG, "Fetching subscription from URL: $urlStr")
 
             var downloadedContent: String? = null
@@ -69,7 +71,12 @@ object SubscriptionFetcher {
             if (!downloadedContent.isNullOrBlank()) {
                 val downloadedConfigs = parseVlessConfigs(downloadedContent)
                 if (downloadedConfigs.isNotEmpty()) {
-                    prefs.edit()
+                    urlPrefs.edit()
+                        .putString(KEY_URL, urlStr)
+                        .putString(KEY_CONTENT, downloadedContent)
+                        .apply()
+                    // Keep the legacy single-subscription cache current for downgrade compatibility.
+                    legacyPrefs.edit()
                         .putString(KEY_URL, urlStr)
                         .putString(KEY_CONTENT, downloadedContent)
                         .apply()
@@ -79,8 +86,11 @@ object SubscriptionFetcher {
                 AppLogger.w(TAG, "Downloaded subscription contained no valid VLESS entries; trying cache")
             }
 
-            val cachedContent = if (prefs.getString(KEY_URL, null) == urlStr) {
-                prefs.getString(KEY_CONTENT, null)
+            val cachedContent = if (urlPrefs.getString(KEY_URL, null) == urlStr) {
+                urlPrefs.getString(KEY_CONTENT, null)
+            } else if (legacyPrefs.getString(KEY_URL, null) == urlStr) {
+                // Read a cache written by earlier app versions when migrating the first URL.
+                legacyPrefs.getString(KEY_CONTENT, null)
             } else {
                 null
             }
@@ -93,6 +103,10 @@ object SubscriptionFetcher {
             AppLogger.e(TAG, "Subscription download failed and no valid cache is available")
             SubscriptionFetchResult(emptyList(), loadedFromCache = true)
         }
+
+    private fun cacheKey(url: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(url.toByteArray(Charsets.UTF_8))
+        .joinToString("") { byte -> "%02x".format(byte) }
 
     @OptIn(ExperimentalEncodingApi::class)
     private fun parseVlessConfigs(rawContent: String): List<VlessConfig> {

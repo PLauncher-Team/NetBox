@@ -3,6 +3,15 @@ package com.example.netbox
 import android.content.Context
 import com.example.netbox.xray.AppLogger
 import com.example.netbox.xray.ProxyTransport
+import org.json.JSONArray
+import org.json.JSONObject
+
+data class SubscriptionEntry(
+    val id: String,
+    val name: String,
+    val url: String,
+    val enabled: Boolean = true
+)
 
 class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("netbox_settings", Context.MODE_PRIVATE)
@@ -10,6 +19,54 @@ class SettingsStore(context: Context) {
     var subscriptionUrl: String
         get() = prefs.getString("sub_url", "") ?: ""
         set(value) = prefs.edit().putString("sub_url", value).apply()
+
+    var subscriptions: List<SubscriptionEntry>
+        get() {
+            val saved = prefs.getString("subscriptions_json", null)
+            if (saved != null) {
+                return try {
+                    val array = JSONArray(saved)
+                    buildList {
+                        for (index in 0 until array.length()) {
+                            val item = array.optJSONObject(index) ?: continue
+                            val id = item.optString("id").takeIf { it.isNotBlank() } ?: "subscription-$index"
+                            val name = item.optString("name").ifBlank { "Подписка ${index + 1}" }
+                            val url = item.optString("url").trim()
+                            if (url.isNotBlank()) {
+                                add(SubscriptionEntry(id, name, url, item.optBoolean("enabled", true)))
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            }
+
+            // One-time migration from the former single-URL setting.
+            val legacyUrl = subscriptionUrl.trim()
+            val migrated = if (legacyUrl.isNotBlank()) {
+                listOf(SubscriptionEntry("legacy-${legacyUrl.hashCode()}", "Подписка 1", legacyUrl, true))
+            } else {
+                emptyList()
+            }
+            subscriptions = migrated
+            return migrated
+        }
+        set(value) {
+            val array = JSONArray()
+            value.forEach { subscription ->
+                array.put(JSONObject().apply {
+                    put("id", subscription.id)
+                    put("name", subscription.name)
+                    put("url", subscription.url)
+                    put("enabled", subscription.enabled)
+                })
+            }
+            prefs.edit()
+                .putString("subscriptions_json", array.toString())
+                .remove("sub_url")
+                .apply()
+        }
 
     var selectedCountryCode: String
         get() = prefs.getString("selected_country_code", "auto") ?: "auto"
@@ -89,4 +146,12 @@ class SettingsStore(context: Context) {
             prefs.edit().putBoolean("enable_debug_logs", value).apply()
             AppLogger.isEnabled = value
         }
+
+    var notificationsEnabled: Boolean
+        get() = prefs.getBoolean("notifications_enabled", true)
+        set(value) = prefs.edit().putBoolean("notifications_enabled", value).apply()
+
+    var notificationPermissionAsked: Boolean
+        get() = prefs.getBoolean("notification_permission_asked", false)
+        set(value) = prefs.edit().putBoolean("notification_permission_asked", value).apply()
 }

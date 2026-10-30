@@ -1,6 +1,8 @@
 package com.example.netbox
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -10,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -42,6 +45,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -55,14 +59,18 @@ import androidx.compose.ui.unit.dp
 import com.example.netbox.ui.components.ColorPickerDialog
 import com.example.netbox.ui.home.HomeScreen
 import com.example.netbox.ui.settings.SettingsScreen
+import com.example.netbox.ui.subscriptions.SubscriptionManagerScreen
 import com.example.netbox.ui.theme.AppColorScheme
 import com.example.netbox.ui.theme.NetBoxTheme
 import com.example.netbox.xray.AppLogger
 import com.example.netbox.xray.CountryCatalog
 import com.example.netbox.xray.CountryInfo
+import com.example.netbox.xray.LocalProxyAuth
 import com.example.netbox.xray.PingTester
+import com.example.netbox.xray.ProxyCacheStore
 import com.example.netbox.xray.ProxyTransport
 import com.example.netbox.xray.SubscriptionFetcher
+import com.example.netbox.xray.SubscriptionFetchResult
 import com.example.netbox.xray.VlessConfig
 import com.example.netbox.xray.VpnState
 import com.example.netbox.xray.XrayVpnService
@@ -76,26 +84,58 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private lateinit var settingsStore: SettingsStore
+    private var tileToggleRequestCounter by mutableIntStateOf(0)
+    private var tilePreferencesRequestCounter by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsStore = SettingsStore(this)
+        LocalProxyAuth.installUrlAuthenticator(this)
         AppLogger.isEnabled = settingsStore.enableDebugLogs
+        tileToggleRequestCounter = if (intent?.action == ACTION_TILE_TOGGLE) 1 else 0
+        tilePreferencesRequestCounter = if (intent?.action == ACTION_TILE_PREFERENCES) 1 else 0
         enableEdgeToEdge()
         setContent {
-            NetBoxApp(settingsStore)
+            NetBoxApp(settingsStore, tileToggleRequestCounter, tilePreferencesRequestCounter)
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        when (intent.action) {
+            ACTION_TILE_TOGGLE -> tileToggleRequestCounter++
+            ACTION_TILE_PREFERENCES -> tilePreferencesRequestCounter++
+        }
+    }
+
+    companion object {
+        const val ACTION_TILE_TOGGLE = "com.example.netbox.action.TILE_TOGGLE"
+        const val ACTION_TILE_PREFERENCES = "android.service.quicksettings.action.QS_TILE_PREFERENCES"
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun NetBoxApp(settingsStore: SettingsStore) {
+fun NetBoxApp(
+    settingsStore: SettingsStore,
+    tileToggleRequestCounter: Int = 0,
+    tilePreferencesRequestCounter: Int = 0
+) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
     var currentScreen by remember { mutableStateOf(Screen.HOME) }
-    var subscriptionUrl by remember { mutableStateOf(settingsStore.subscriptionUrl) }
+    var subscriptions by remember { mutableStateOf(settingsStore.subscriptions) }
+    val enabledSubscriptionUrls = remember(subscriptions) {
+        subscriptions.filter { it.enabled }
+            .map { it.url.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+    val subscriptionUrl = remember(enabledSubscriptionUrls) {
+        enabledSubscriptionUrls.joinToString(separator = "|netbox-subscription|")
+    }
     var pingUrl by remember { mutableStateOf(settingsStore.pingUrl) }
     var parallelPingsText by remember { mutableStateOf(settingsStore.parallelPings.toString()) }
     var pingTimeoutText by remember { mutableStateOf(settingsStore.pingTimeoutSeconds.toString()) }
@@ -118,6 +158,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     var lastSourceSubscriptionUris by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isHttpPing by remember { mutableStateOf(settingsStore.isHttpPing) }
     var enableDebugLogs by remember { mutableStateOf(settingsStore.enableDebugLogs) }
+    var notificationsEnabled by remember { mutableStateOf(settingsStore.notificationsEnabled) }
 
     var themeMode by remember {
         mutableStateOf(
@@ -180,6 +221,23 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         }
     }
 
+    suspend fun fetchAllEnabledSubscriptions(
+        urls: List<String>,
+        throughVpn: Boolean = false
+    ): SubscriptionFetchResult {
+        val results = urls.map { url ->
+            SubscriptionFetcher.fetchVlessConfigs(
+                context = context,
+                urlStr = url,
+                throughVpn = throughVpn
+            )
+        }
+        return SubscriptionFetchResult(
+            configs = results.flatMap { it.configs }.distinctBy { it.rawUri },
+            loadedFromCache = results.isNotEmpty() && results.all { it.loadedFromCache }
+        )
+    }
+
     suspend fun testWorkingCandidates(
         configs: List<VlessConfig>,
         onProgress: (completed: Int, total: Int, bestConfig: VlessConfig?) -> Unit = { _, _, _ -> }
@@ -207,7 +265,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             .toList()
     }
 
-    BackHandler(enabled = currentScreen == Screen.SETTINGS) {
+    BackHandler(enabled = currentScreen == Screen.SETTINGS || currentScreen == Screen.SUBSCRIPTIONS) {
         currentScreen = Screen.HOME
     }
 
@@ -262,6 +320,23 @@ fun NetBoxApp(settingsStore: SettingsStore) {
         isProcessing = false
     }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted && notificationsEnabled) {
+            statusMessage = "Разрешение на уведомления не выдано"
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !settingsStore.notificationPermissionAsked
+        ) {
+            settingsStore.notificationPermissionAsked = true
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     fun stopVpnProcess() {
         connectJob?.cancel()
         connectJob = null
@@ -282,18 +357,16 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     }
 
     fun requestSubscriptionRefresh() {
-        if (isRefreshingSubscription || isCheckingCountryPool || subscriptionUrl.isBlank()) return
+        val subscriptionUrls = subscriptions.filter { it.enabled }
+            .map { it.url.trim() }.filter { it.isNotBlank() }.distinct()
+        if (isRefreshingSubscription || isCheckingCountryPool || subscriptionUrls.isEmpty()) return
         isRefreshingSubscription = true
         val requestedCountryCode = selectedCountryCode
 
         coroutineScope.launch(Dispatchers.IO) {
             try {
                 val throughVpn = XrayVpnService.vpnState.value == VpnState.CONNECTED
-                val fetched = SubscriptionFetcher.fetchVlessConfigs(
-                    context = context,
-                    urlStr = subscriptionUrl,
-                    throughVpn = throughVpn
-                )
+                val fetched = fetchAllEnabledSubscriptions(subscriptionUrls, throughVpn = throughVpn)
                 if (fetched.configs.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         statusMessage = "Не удалось загрузить подписку"
@@ -319,6 +392,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                 }
 
                 val healthyAllCountryConfigs = testWorkingCandidates(transportCandidates)
+                ProxyCacheStore.save(context, subscriptionUrl, healthyAllCountryConfigs)
                 withContext(Dispatchers.Main) {
                     countryCandidatePool = healthyAllCountryConfigs
                     pingDataVersion++
@@ -399,8 +473,10 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     fun startConnectProcess() {
         if (isProcessing || isCheckingCountryPool) return
 
-        if (subscriptionUrl.isBlank()) {
-            statusMessage = "Укажите URL подписки"
+        val subscriptionUrls = subscriptions.filter { it.enabled }
+            .map { it.url.trim() }.filter { it.isNotBlank() }.distinct()
+        if (subscriptionUrls.isEmpty()) {
+            statusMessage = "Добавьте и включите хотя бы одну подписку"
             return
         }
 
@@ -410,7 +486,55 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
         connectJob = coroutineScope.launch(Dispatchers.IO) {
             try {
-                val fetchResult = SubscriptionFetcher.fetchVlessConfigs(context, subscriptionUrl)
+                val cached = ProxyCacheStore.loadFresh(
+                    context = context,
+                    subscriptionUrl = subscriptionUrl,
+                    refreshIntervalMinutes = settingsStore.subscriptionRefreshMinutes
+                )
+                if (cached != null) {
+                    val countries = CountryCatalog.load(context)
+                    val transportFiltered = cached.configs.filter { config ->
+                        ProxyTransport.allows(config.params["type"], allowedTransports)
+                    }
+                    var cachedCandidates = CountryCatalog.filterByCountry(
+                        transportFiltered,
+                        requestedCountryCode,
+                        countries
+                    )
+                    // Do not silently change the user's country preference just because
+                    // the fresh cache has no server for it; fall through to refresh/test.
+                    if (cachedCandidates.isNotEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            countryCatalog = countries
+                            subscriptionCatalog = cached.configs
+                            countryCandidatePool = transportFiltered
+                            lastSourceSubscriptionUris = cached.configs.map { it.rawUri }.toSet()
+                            pingDataVersion++
+                            pendingProxyPool = cachedCandidates.sortedBy { it.pingMs }
+                            statusMessage = "Используем кеш проверенных серверов · ${cachedCandidates.size}"
+                            val permissionIntent = VpnService.prepare(context)
+                            if (permissionIntent != null) {
+                                vpnPermissionLauncher.launch(permissionIntent)
+                            } else {
+                                activeProxyPool = pendingProxyPool
+                                XrayVpnService.startVpn(
+                                    context,
+                                    pendingProxyPool,
+                                    settingsStore.observatoryIntervalSeconds,
+                                    settingsStore.pingTimeoutSeconds,
+                                    settingsStore.pingUrl,
+                                    if (settingsStore.isHttpPing) "GET" else "HEAD"
+                                )
+                                statusMessage = "Подключение из кеша · ${pendingProxyPool.size} прокси"
+                                isProcessing = false
+                                maintenanceToken++
+                            }
+                        }
+                        return@launch
+                    }
+                }
+
+                val fetchResult = fetchAllEnabledSubscriptions(subscriptionUrls)
                 coroutineContext.ensureActive()
                 val countries = CountryCatalog.load(context)
                 val refreshedConfigs = preserveKnownPings(fetchResult.configs)
@@ -458,6 +582,9 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     }
                 }
                 coroutineContext.ensureActive()
+                // Persist every probe result, including failures, so a fresh cache can
+                // be reused without repeating the entire test batch.
+                ProxyCacheStore.save(context, subscriptionUrl, testedConfigs)
                 val healthyAllCountryConfigs = testedConfigs.filter {
                     it.pingMs >= 0L
                 }
@@ -525,6 +652,62 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                     isProcessing = false
                 }
             }
+        }
+    }
+
+    var refreshAfterSubscriptionChange by remember { mutableStateOf(false) }
+
+    fun applySubscriptionChanges(updated: List<SubscriptionEntry>) {
+        val wasConnecting = isProcessing || vpnState == VpnState.CONNECTING
+        subscriptions = updated
+        settingsStore.subscriptions = updated
+        if (wasConnecting) stopVpnProcess()
+
+        val enabledCount = updated.count { it.enabled && it.url.isNotBlank() }
+        when {
+            enabledCount == 0 -> {
+                if (vpnState != VpnState.DISCONNECTED || isProcessing) stopVpnProcess()
+                subscriptionCatalog = emptyList()
+                countryCandidatePool = emptyList()
+                activeProxyPool = emptyList()
+                statusMessage = "Добавьте и включите хотя бы одну подписку"
+            }
+            vpnState == VpnState.CONNECTED -> refreshAfterSubscriptionChange = true
+            else -> {
+                subscriptionCatalog = emptyList()
+                countryCandidatePool = emptyList()
+                activeProxyPool = emptyList()
+                statusMessage = "Список подписок обновлён · включено: $enabledCount"
+            }
+        }
+    }
+
+    LaunchedEffect(subscriptionUrl, refreshAfterSubscriptionChange) {
+        if (refreshAfterSubscriptionChange) {
+            refreshAfterSubscriptionChange = false
+            requestSubscriptionRefresh()
+        }
+    }
+
+    fun toggleConnectionFromQuickSettings() {
+        if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
+            stopVpnProcess()
+        } else if (isCheckingCountryPool) {
+            statusMessage = "Сначала завершится проверка списка серверов"
+        } else {
+            startConnectProcess()
+        }
+    }
+
+    LaunchedEffect(tileToggleRequestCounter) {
+        if (tileToggleRequestCounter > 0) {
+            toggleConnectionFromQuickSettings()
+        }
+    }
+
+    LaunchedEffect(tilePreferencesRequestCounter) {
+        if (tilePreferencesRequestCounter > 0) {
+            currentScreen = Screen.HOME
         }
     }
 
@@ -607,7 +790,59 @@ fun NetBoxApp(settingsStore: SettingsStore) {
     }
 
     LaunchedEffect(Unit) {
-        countryCatalog = withContext(Dispatchers.IO) { CountryCatalog.load(context) }
+        withContext(Dispatchers.IO) {
+            val countries = CountryCatalog.load(context)
+            val cached = ProxyCacheStore.load(context)
+            countries to cached
+        }.let { (countries, cached) ->
+            countryCatalog = countries
+
+            // Restore the saved all-country pool when the activity is recreated while
+            // the VPN service is still alive. The UI state is in-memory, but the tested
+            // proxy cache survives closing/reopening the app.
+            if (cached != null && cached.subscriptionUrl == subscriptionUrl) {
+                val healthyConfigs = cached.configs
+                    .filter { it.pingMs >= 0L }
+                    .distinctBy { it.rawUri }
+                    .sortedBy { it.pingMs }
+                val transportFiltered = healthyConfigs.filter { config ->
+                    ProxyTransport.allows(config.params["type"], allowedTransports)
+                }
+                subscriptionCatalog = cached.configs
+                countryCandidatePool = transportFiltered
+                lastSourceSubscriptionUris = cached.configs.map { it.rawUri }.toSet()
+
+                if (XrayVpnService.vpnState.value == VpnState.CONNECTED) {
+                    val selectedPool = CountryCatalog.filterByCountry(
+                        transportFiltered,
+                        selectedCountryCode,
+                        countries
+                    )
+                    // Keep the connected server visible even if an older cache does not
+                    // contain it, but don't restart or modify the running VPN.
+                    activeProxyPool = selectedPool.ifEmpty {
+                        listOfNotNull(XrayVpnService.connectedServer.value)
+                    }
+                    statusMessage = "Восстановлен кеш серверов · ${transportFiltered.size} рабочих прокси"
+                } else {
+                    activeProxyPool = CountryCatalog.filterByCountry(
+                        transportFiltered,
+                        selectedCountryCode,
+                        countries
+                    )
+                    statusMessage = if (transportFiltered.isNotEmpty()) {
+                        "Загружены сохранённые серверы · ${transportFiltered.size} рабочих прокси"
+                    } else {
+                        statusMessage
+                    }
+                }
+                pingDataVersion++
+            } else if (XrayVpnService.vpnState.value == VpnState.CONNECTED) {
+                // Last-resort UI fallback if the cache is missing or belongs to another
+                // subscription; this does not claim to reconstruct the full proxy pool.
+                activeProxyPool = listOfNotNull(XrayVpnService.connectedServer.value)
+            }
+        }
     }
 
 
@@ -697,11 +932,11 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                         transitionSpec = {
                             fadeIn(animationSpec = tween(300)) + slideInHorizontally(
                                 animationSpec = tween(300),
-                                initialOffsetX = { fullWidth -> if (targetState == Screen.SETTINGS) fullWidth / 3 else -fullWidth / 3 }
+                                initialOffsetX = { fullWidth -> if (targetState == Screen.SETTINGS || targetState == Screen.SUBSCRIPTIONS) fullWidth / 3 else -fullWidth / 3 }
                             ) togetherWith
                                 fadeOut(animationSpec = tween(300)) + slideOutHorizontally(
                                     animationSpec = tween(300),
-                                    targetOffsetX = { fullWidth -> if (targetState == Screen.SETTINGS) -fullWidth / 3 else fullWidth / 3 }
+                                    targetOffsetX = { fullWidth -> if (targetState == Screen.SETTINGS || targetState == Screen.SUBSCRIPTIONS) -fullWidth / 3 else fullWidth / 3 }
                                 )
                         },
                         label = "screenTransition",
@@ -726,18 +961,27 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                                     !isProcessing && !isCheckingCountryPool && !isRefreshingSubscription &&
                                     vpnState != VpnState.CONNECTING,
                                 onCountrySelected = { handleCountrySelection(it) },
-                                onToggleConnection = {
-                                    if (vpnState == VpnState.CONNECTED || isProcessing || vpnState == VpnState.CONNECTING) {
-                                        stopVpnProcess()
-                                    } else if (isCheckingCountryPool) {
-                                        statusMessage = "Сначала завершится проверка списка серверов"
-                                    } else {
-                                        startConnectProcess()
-                                    }
-                                },
+                                onToggleConnection = { toggleConnectionFromQuickSettings() },
+                                onOpenSubscriptions = { currentScreen = Screen.SUBSCRIPTIONS },
+                                subscriptionCount = subscriptions.size,
+                                enabledSubscriptionCount = subscriptions.count { it.enabled },
                                 onForceRemoveCurrentServer = { forceRemoveCurrentServer() }
                             )
-                            Screen.SETTINGS -> SettingsScreen(settingsStore, settingsTab, { settingsTab = it }, subscriptionUrl, { subscriptionUrl = it }, pingUrl, { pingUrl = it }, parallelPingsText, { parallelPingsText = it }, pingTimeoutText, { pingTimeoutText = it }, pingAttemptsText, { pingAttemptsText = it }, observatoryIntervalText, { observatoryIntervalText = it }, subscriptionRefreshText, { subscriptionRefreshText = it }, isHttpPing, { isHttpPing = it }, allowedTransports, { allowedTransports = it }, enableDebugLogs, { enableDebugLogs = it }, themeMode, { themeMode = it }, useSystemTheme, { useSystemTheme = it }, isDynamicSupported, colorSchemeOption, { colorSchemeOption = it }, customColor, { logExportLauncher.launch("netbox-logs.txt") }, { showColorPicker = true })
+                            Screen.SETTINGS -> SettingsScreen(settingsStore, settingsTab, { settingsTab = it }, pingUrl, { pingUrl = it }, parallelPingsText, { parallelPingsText = it }, pingTimeoutText, { pingTimeoutText = it }, pingAttemptsText, { pingAttemptsText = it }, observatoryIntervalText, { observatoryIntervalText = it }, subscriptionRefreshText, { subscriptionRefreshText = it }, isHttpPing, { isHttpPing = it }, allowedTransports, { allowedTransports = it }, enableDebugLogs, { enableDebugLogs = it }, notificationsEnabled, { enabled ->
+                                notificationsEnabled = enabled
+                                settingsStore.notificationsEnabled = enabled
+                                if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    settingsStore.notificationPermissionAsked = true
+                                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                }
+                                XrayVpnService.refreshNotification(context)
+                            }, themeMode, { themeMode = it }, useSystemTheme, { useSystemTheme = it }, isDynamicSupported, colorSchemeOption, { colorSchemeOption = it }, customColor, { logExportLauncher.launch("netbox-logs.txt") }, { showColorPicker = true })
+                            Screen.SUBSCRIPTIONS -> SubscriptionManagerScreen(
+                                subscriptions = subscriptions,
+                                onSubscriptionsChange = { applySubscriptionChanges(it) }
+                            )
                         }
                     }
                 }
@@ -795,9 +1039,8 @@ fun NetBoxApp(settingsStore: SettingsStore) {
 
         suspend fun refreshSubscription(force: Boolean): Boolean {
             val fetched = withContext(Dispatchers.IO) {
-                SubscriptionFetcher.fetchVlessConfigs(
-                    context,
-                    subscriptionUrl,
+                fetchAllEnabledSubscriptions(
+                    enabledSubscriptionUrls,
                     throughVpn = XrayVpnService.vpnState.value == VpnState.CONNECTED
                 )
             }
@@ -824,6 +1067,7 @@ fun NetBoxApp(settingsStore: SettingsStore) {
             // Recheck every allowed country, not just the currently selected one. This
             // prevents untested countries from reappearing without ping values after refresh.
             val healthyAllCountryConfigs = testCandidates(transportCandidates)
+            ProxyCacheStore.save(context, subscriptionUrl, healthyAllCountryConfigs)
             countryCandidatePool = healthyAllCountryConfigs
             if (healthyAllCountryConfigs.isEmpty()) {
                 statusMessage = "Обновление подписки: работающие прокси не найдены"
@@ -879,11 +1123,14 @@ fun NetBoxApp(settingsStore: SettingsStore) {
                 val currentProbeMs = if (forcedRecovery) {
                     -1L
                 } else {
+                    val localCredentials = LocalProxyAuth.credentials(context)
                     PingTester.testActiveProxyWithRetry(
                         pingUrl,
                         timeoutSeconds * 1000,
                         if (isHttpPing) "GET" else "HEAD",
-                        attempts = (pingAttemptsText.toIntOrNull() ?: 2).coerceIn(1, 5)
+                        attempts = (pingAttemptsText.toIntOrNull() ?: 2).coerceIn(1, 5),
+                        socksUsername = localCredentials.username,
+                        socksPassword = localCredentials.password
                     )
                 }
                 val currentHealthy = !forcedRecovery && currentProbeMs >= 0L

@@ -15,8 +15,6 @@ import com.example.netbox.xray.ProxyTransport
 @Composable
 fun ConnectionSettingsTab(
     settingsStore: SettingsStore,
-    subscriptionUrl: String,
-    onSubscriptionUrlChange: (String) -> Unit,
     pingUrl: String,
     onPingUrlChange: (String) -> Unit,
     parallelPingsText: String,
@@ -34,34 +32,6 @@ fun ConnectionSettingsTab(
     allowedTransports: Set<String>,
     onAllowedTransportsChange: (Set<String>) -> Unit
 ) {
-    Text(
-        text = "Url подписки",
-        style = MaterialTheme.typography.titleMedium.copy(
-            fontWeight = FontWeight.SemiBold
-        ),
-        color = MaterialTheme.colorScheme.onBackground,
-        modifier = Modifier.padding(bottom = 6.dp)
-    )
-
-    OutlinedTextField(
-        value = subscriptionUrl,
-        onValueChange = {
-            onSubscriptionUrlChange(it)
-            settingsStore.subscriptionUrl = it
-        },
-        placeholder = {
-            Text(
-                text = "https://example.com/sub.txt",
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-            )
-        },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium
-    )
-
-    Spacer(modifier = Modifier.height(16.dp))
-
     Text(
         text = "Url пинга",
         style = MaterialTheme.typography.titleMedium.copy(

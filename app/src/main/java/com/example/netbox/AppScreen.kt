@@ -1,7 +1,7 @@
 package com.example.netbox
 
 enum class Screen {
-    HOME, SETTINGS
+    HOME, SETTINGS, SUBSCRIPTIONS
 }
 
 enum class ThemeMode {
